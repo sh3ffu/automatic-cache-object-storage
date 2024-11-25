@@ -3,6 +3,7 @@ package main
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -type Config proxy proxy.c
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -18,9 +19,9 @@ import (
 )
 
 const (
-	CGROUP_PATH = "/sys/fs/cgroup" // Root cgroup path
-	PROXY_PORT      = 18000 // Port where the proxy server listens
-	SO_ORIGINAL_DST = 80 // Socket option to get the original destination address
+	CGROUP_PATH     = "/sys/fs/cgroup" // Root cgroup path
+	PROXY_PORT      = 18000            // Port where the proxy server listens
+	SO_ORIGINAL_DST = 80               // Socket option to get the original destination address
 )
 
 // SockAddrIn is a struct to hold the sockaddr_in structure for IPv4 "retrieved" by the SO_ORIGINAL_DST.
@@ -31,6 +32,8 @@ type SockAddrIn struct {
 	// Pad to match the size of sockaddr_in
 	Pad [8]byte
 }
+
+var counter uint64 = 0
 
 // helper function for getsockopt
 func getsockopt(s int, level int, optname int, optval unsafe.Pointer, optlen *uint32) (err error) {
@@ -45,8 +48,8 @@ func getsockopt(s int, level int, optname int, optval unsafe.Pointer, optlen *ui
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
 
-	// Using RawConn is necessary to perform low-level operations on the underlying socket file descriptor in Go. 
-	// This allows us to use getsockopt to retrieve the original destination address set by the SO_ORIGINAL_DST option, 
+	// Using RawConn is necessary to perform low-level operations on the underlying socket file descriptor in Go.
+	// This allows us to use getsockopt to retrieve the original destination address set by the SO_ORIGINAL_DST option,
 	// which isn't directly accessible through Go's higher-level networking API.
 	rawConn, err := conn.(*net.TCPConn).SyscallConn()
 	if err != nil {
@@ -80,45 +83,56 @@ func handleConnection(conn net.Conn) {
 
 	fmt.Printf("Proxying connection from %s to %s\n", conn.RemoteAddr(), targetConn.RemoteAddr())
 
+	var egressPrintBuffer bytes.Buffer
+	var ingressPrintBuffer bytes.Buffer
+
+	egressMultiWriter := io.MultiWriter(targetConn, &egressPrintBuffer)
+	ingressMultiWriter := io.MultiWriter(conn, &ingressPrintBuffer)
+
+	// Increment the counter for each request
+	counter++
+
 	// The following code creates two data transfer channels:
-  // - From the client to the target server (handled by a separate goroutine).
-  // - From the target server to the client (handled by the main goroutine).
+	// - From the client to the target server (handled by a separate goroutine).
+	// - From the target server to the client (handled by the main goroutine).
 	go func() {
-		_, err = io.Copy(targetConn, conn)
+		_, err = io.Copy(egressMultiWriter, conn)
 		if err != nil {
 			log.Printf("Failed copying data to target: %v", err)
 		}
+		fmt.Printf("Request no. %d: \n", counter)
 	}()
-	_, err = io.Copy(conn, targetConn)
+	_, err = io.Copy(ingressMultiWriter, targetConn)
 	if err != nil {
 		log.Printf("Failed copying data from target: %v", err)
 	}
+	fmt.Printf("Response no. %d:\n", counter)
 }
 
 func main() {
 	// Remove resource limits for kernels <5.11.
-	if err := rlimit.RemoveMemlock(); err != nil { 
+	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Print("Removing memlock:", err)
 	}
 
-	// Load the compiled eBPF ELF and load it into the kernel 
+	// Load the compiled eBPF ELF and load it into the kernel
 	// NOTE: we could also pin the eBPF program
 	var objs proxyObjects
 	if err := loadProxyObjects(&objs, nil); err != nil {
-			log.Print("Error loading eBPF objects:", err)
+		log.Print("Error loading eBPF objects:", err)
 	}
 	defer objs.Close()
 
 	// Attach eBPF programs to the root cgroup
 	connect4Link, err := link.AttachCgroup(link.CgroupOptions{
-		Path:    CGROUP_PATH, 
+		Path:    CGROUP_PATH,
 		Attach:  ebpf.AttachCGroupInet4Connect,
 		Program: objs.CgConnect4,
 	})
 	if err != nil {
-			log.Print("Attaching CgConnect4 program to Cgroup:", err)
+		log.Print("Attaching CgConnect4 program to Cgroup:", err)
 	}
-	defer connect4Link.Close() 
+	defer connect4Link.Close()
 
 	sockopsLink, err := link.AttachCgroup(link.CgroupOptions{
 		Path:    CGROUP_PATH,
@@ -126,9 +140,9 @@ func main() {
 		Program: objs.CgSockOps,
 	})
 	if err != nil {
-			log.Print("Attaching CgSockOps program to Cgroup:", err)
+		log.Print("Attaching CgSockOps program to Cgroup:", err)
 	}
-	defer sockopsLink.Close() 
+	defer sockopsLink.Close()
 
 	sockoptLink, err := link.AttachCgroup(link.CgroupOptions{
 		Path:    CGROUP_PATH,
@@ -136,13 +150,15 @@ func main() {
 		Program: objs.CgSockOpt,
 	})
 	if err != nil {
-			log.Print("Attaching CgSockOpt program to Cgroup:", err)
+		log.Print("Attaching CgSockOpt program to Cgroup:", err)
 	}
-	defer sockoptLink.Close() 
+	defer sockoptLink.Close()
 
 	// Start the proxy server on the localhost
 	// We only demonstrate IPv4 in this example, but the same approach can be used for IPv6
 	proxyAddr := fmt.Sprintf("127.0.0.1:%d", PROXY_PORT)
+
+	// Start the proxy server
 	listener, err := net.Listen("tcp", proxyAddr)
 	if err != nil {
 		log.Fatalf("Failed to start proxy server: %v", err)
@@ -154,7 +170,7 @@ func main() {
 	var key uint32 = 0
 	config := proxyConfig{
 		ProxyPort: PROXY_PORT,
-		ProxyPid: uint64(os.Getpid()),
+		ProxyPid:  uint64(os.Getpid()),
 	}
 	err = objs.proxyMaps.MapConfig.Update(&key, &config, ebpf.UpdateAny)
 	if err != nil {
@@ -171,4 +187,5 @@ func main() {
 
 		go handleConnection(conn)
 	}
+
 }
