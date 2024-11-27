@@ -3,12 +3,12 @@ package main
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -type Config proxy proxy.c
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"log"
 	"net"
 	"os"
+	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -22,6 +22,7 @@ const (
 	CGROUP_PATH     = "/sys/fs/cgroup" // Root cgroup path
 	PROXY_PORT      = 18000            // Port where the proxy server listens
 	SO_ORIGINAL_DST = 80               // Socket option to get the original destination address
+	MAX_BUFFER_SIZE = 2048             // Maximum buffer size for reading data from the connection
 )
 
 // SockAddrIn is a struct to hold the sockaddr_in structure for IPv4 "retrieved" by the SO_ORIGINAL_DST.
@@ -44,17 +45,14 @@ func getsockopt(s int, level int, optname int, optval unsafe.Pointer, optlen *ui
 	return
 }
 
-// HTTP proxy request handler
-func handleConnection(conn net.Conn) {
-	defer conn.Close()
-
+func getOriginalTargetFromConn(conn net.Conn) (net.Addr, error) {
 	// Using RawConn is necessary to perform low-level operations on the underlying socket file descriptor in Go.
 	// This allows us to use getsockopt to retrieve the original destination address set by the SO_ORIGINAL_DST option,
 	// which isn't directly accessible through Go's higher-level networking API.
 	rawConn, err := conn.(*net.TCPConn).SyscallConn()
 	if err != nil {
 		log.Printf("Failed to get raw connection: %v", err)
-		return
+		return nil, err
 	}
 
 	var originalDst SockAddrIn
@@ -68,48 +66,79 @@ func handleConnection(conn net.Conn) {
 		}
 	})
 
-	targetAddr := net.IPv4(originalDst.SinAddr[0], originalDst.SinAddr[1], originalDst.SinAddr[2], originalDst.SinAddr[3]).String()
+	targetAddr := net.IPv4(originalDst.SinAddr[0], originalDst.SinAddr[1], originalDst.SinAddr[2], originalDst.SinAddr[3])
 	targetPort := (uint16(originalDst.SinPort[0]) << 8) | uint16(originalDst.SinPort[1])
 
-	fmt.Printf("Original destination: %s:%d\n", targetAddr, targetPort)
+	return &net.TCPAddr{
+		IP:   targetAddr,
+		Port: int(targetPort),
+	}, nil
+
+}
+
+func forwardConnection(conn net.Conn, targetAddr net.Addr) {
+	defer conn.Close()
 
 	// Check that the original destination address is reachable from the proxy
-	targetConn, err := net.DialTimeout("tcp", fmt.Sprintf("%s:%d", targetAddr, targetPort), 5*time.Second)
+	targetConn, err := net.DialTimeout("tcp", targetAddr.String(), 5*time.Second)
 	if err != nil {
 		log.Printf("Failed to connect to original destination: %v", err)
 		return
 	}
 	defer targetConn.Close()
 
-	fmt.Printf("Proxying connection from %s to %s\n", conn.RemoteAddr(), targetConn.RemoteAddr())
+	log.Printf("Proxying connection from %s to %s\n", conn.RemoteAddr(), targetConn.RemoteAddr())
 
-	var egressPrintBuffer bytes.Buffer
-	var ingressPrintBuffer bytes.Buffer
-
-	egressMultiWriter := io.MultiWriter(targetConn, &egressPrintBuffer)
-	ingressMultiWriter := io.MultiWriter(conn, &ingressPrintBuffer)
-
-	// Increment the counter for each request
-	counter++
-
+	// Forward the processed request to the target
 	// The following code creates two data transfer channels:
 	// - From the client to the target server (handled by a separate goroutine).
 	// - From the target server to the client (handled by the main goroutine).
+	ready := make(chan struct{})
 	go func() {
-		_, err = io.Copy(egressMultiWriter, conn)
+		_, err := io.Copy(targetConn, conn)
 		if err != nil {
-			log.Printf("Failed copying data to target: %v", err)
+			log.Printf("Failed to forward connection to target: %v", err)
+			return
 		}
-		fmt.Printf("Request no. %d: \n", counter)
+		ready <- struct{}{}
 	}()
-	_, err = io.Copy(ingressMultiWriter, targetConn)
+
+	_, err = io.Copy(conn, targetConn)
 	if err != nil {
-		log.Printf("Failed copying data from target: %v", err)
+		log.Printf("Failed to forward connection from target: %v", err)
+		return
 	}
-	fmt.Printf("Response no. %d:\n", counter)
+	<-ready
+}
+
+// HTTP proxy request handler
+func handleConnection(conn net.Conn) {
+	//defer conn.Close()
+
+	targetAddr, err := getOriginalTargetFromConn(conn)
+	if err != nil {
+		log.Printf("Failed to get original destination: %v", err)
+		return
+	}
+
+	fmt.Printf("Original destination: %s\n", targetAddr.String())
+
+	// Check if the target address is an HTTP server
+	if strings.Split(targetAddr.String(), ":")[1] != "80" {
+		log.Printf("Non-http traffic detected")
+		forwardConnection(conn, targetAddr)
+		return
+	} else {
+		log.Printf("http traffic detected")
+		handleHttpConn(conn, targetAddr)
+	}
+
 }
 
 func main() {
+	// Initialize the configuration from the interceptLinks.json file
+	initConfig()
+
 	// Remove resource limits for kernels <5.11.
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Print("Removing memlock:", err)

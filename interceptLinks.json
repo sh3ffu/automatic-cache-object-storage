@@ -1,0 +1,17 @@
+{
+    "configName": "sample",
+    "interceptLinks": [
+        {
+            "url": "http://www.google.com",
+            "intercept": true
+        },
+        {
+            "url": "http://www.bing.com",
+            "intercept": true
+        },
+        {
+            "url": "http://www.example.com",
+            "intercept": true
+        }
+    ]
+}
