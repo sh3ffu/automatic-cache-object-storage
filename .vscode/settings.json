@@ -1,0 +1,8 @@
+{
+    "go.delveConfig": {
+        "debugAdapter": "dlv-dap",
+        "dlvFlags": [
+            "--only-same-user=false"
+        ],
+    }
+}
