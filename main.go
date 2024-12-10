@@ -9,7 +9,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"strings"
 	"syscall"
 	"time"
 	"unsafe"
@@ -124,15 +123,17 @@ func handleConnection(conn net.Conn) {
 
 	fmt.Printf("Original destination: %s\n", targetAddr.String())
 
+	// DEPRECATED: Check moved on the eBPF level
 	// Check if the target address is an HTTP server
-	if strings.Split(targetAddr.String(), ":")[1] != "80" {
-		log.Printf("Non-http traffic detected")
-		forwardConnection(conn, targetAddr)
-		return
-	} else {
-		log.Printf("http traffic detected")
-		handleHttpConn(conn, targetAddr)
-	}
+	// if strings.Split(targetAddr.String(), ":")[1] != "80" {
+	// 	log.Printf("Non-http traffic detected")
+	// 	forwardConnection(conn, targetAddr)
+	// 	return
+	// } else {
+	// 	log.Printf("http traffic detected")
+	// 	handleHttpConn(conn, targetAddr)
+	// }
+	handleHttpConn(conn, targetAddr)
 
 }
 
