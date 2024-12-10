@@ -3,6 +3,7 @@ package main
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -type Config proxy proxy.c
 
 import (
+	"C"
 	"fmt"
 	"io"
 	"log"

@@ -174,6 +174,13 @@ func handleResponse(response *http.Response, conn net.Conn, id uint64) {
 	defer response.Body.Close()
 	//defer conn.Close()
 
+	// mockResponse := "HTTP/1.1 200 OK\r\n" +
+	// 	"Content-Type: text/html\r\n" +
+	// 	"Content-Length: 11\r\n" +
+	// 	"\r\n" +
+	// 	"Hello World" +
+	// 	"\r\n"
+
 	conn.Write([]byte("HTTP/1.1 " + response.Status + "\r\n"))
 
 	for k, v := range response.Header {
@@ -193,6 +200,8 @@ func handleResponse(response *http.Response, conn net.Conn, id uint64) {
 	printReady := make(chan struct{})
 	go printResponse(consolePipeReader, response, id, printReady)
 	_, err := io.Copy(multiWriter, response.Body)
+	// uncomment for mock response
+	//_, err := io.Copy(multiWriter, strings.NewReader(mockResponse))
 	conn.Close()
 
 	if err != nil {
