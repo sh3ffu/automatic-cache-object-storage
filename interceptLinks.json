@@ -12,6 +12,10 @@
         {
             "url": "http://www.example.com",
             "intercept": true
+        },
+        {
+            "url": "s3.eu-central-1.amazonaws.com",
+            "intercept": true
         }
     ]
 }
