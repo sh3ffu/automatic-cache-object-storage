@@ -112,7 +112,7 @@ func forwardConnection(conn net.Conn, targetAddr net.Addr) {
 }
 
 // HTTP proxy request handler
-func handleConnection(conn net.Conn) {
+func handleConnection(conn net.Conn, bypassHttpHandler bool) {
 	//defer conn.Close()
 
 	targetAddr, err := getOriginalTargetFromConn(conn)
@@ -133,13 +133,26 @@ func handleConnection(conn net.Conn) {
 	// 	log.Printf("http traffic detected")
 	// 	handleHttpConn(conn, targetAddr)
 	// }
-	handleHttpConn(conn, targetAddr)
+	if !bypassHttpHandler {
+		handleHttpConn(conn, targetAddr)
+	} else {
+		forwardConnection(conn, targetAddr)
+	}
 
 }
 
 func main() {
 	// Initialize the configuration from the interceptLinks.json file
 	initConfig()
+
+	bypassHttpHandler := false
+
+	args := os.Args[1:]
+	if len(args) > 0 {
+		if args[0] == "--bypass" {
+			bypassHttpHandler = true
+		}
+	}
 
 	// Remove resource limits for kernels <5.11.
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -216,7 +229,7 @@ func main() {
 			continue
 		}
 
-		go handleConnection(conn)
+		go handleConnection(conn, bypassHttpHandler)
 	}
 
 }
