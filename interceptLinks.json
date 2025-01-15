@@ -16,6 +16,14 @@
         {
             "url": "s3.eu-central-1.amazonaws.com",
             "intercept": true
+        },
+        {
+            "url": "134.61.153.132:9000",
+            "intercept": true
+        },
+        {
+            "url": "host.lima.internal",
+            "intercept": true
         }
     ]
 }
