@@ -1,12 +1,32 @@
-# Transparent Proxy
+# Automatic Caching For Cloud Object Storage
 
-A transparent proxy, also known as an inline proxy, intercepts client requests and redirects them without modifying the request or requiring client-side configuration. It operates invisibly to users, meaning they are unaware of its presence and do not need to adjust their network settings. This technology is invaluable for network management, security policy enforcement, traffic monitoring, and optimization. Transparent proxies can execute a range of functions, including content filtering, cache acceleration, traffic control, and load balancing. Commonly used technologies for implementing transparent proxies include TPROXY, NAT, and others.
+A transparent proxy, also known as an inline proxy, intercepts client requests and redirects them without modifying the request or requiring client-side configuration. It operates invisibly to users, meaning they are unaware of its presence and do not need to adjust their network settings. This technology is used to analyse object storage requests and cache them for future use. 
 
 In this repository, I implementated Transparent proxy using eBPF. Specifically, I utilize Golang alongside the ebpf-go package.
 
+## Components
+
+- **eBPF Program**: The eBPF program is responsible for intercepting and redirecting network traffic. It is written in C and compiled using LLVM. The program is loaded into the kernel using using the `bpf` system call.
+
+- **Golang Program**: The Golang program is responsible for loading the eBPF program into the kernel and setting up the network interface. It uses the ebpf-go library to interact with the eBPF program.
+
 ## How to Run
 
-https://github.com/user-attachments/assets/325745b2-9be1-43cd-bd64-14fa6ac5f5e0
+### Using Makefile
+
+
+
+To build and run the eBPF program, simply run the following command:
+```
+make run
+```
+
+To run the program, run the following command:
+```
+sudo ./build/proxy
+```
+
+### Using Go
 
 First build and run the eBPF program:
 ```
