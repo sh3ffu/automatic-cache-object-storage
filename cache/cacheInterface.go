@@ -11,13 +11,13 @@ type ObjectMetadata struct {
 }
 
 type Object struct {
-	Metadata ObjectMetadata
-	Reader   io.Reader
-	Writer   io.Writer
+	io.Reader
+	io.Writer
+	Metadata *ObjectMetadata
 }
 
 type Cache interface {
-	get(key string) Object
-	getMetadata(key string) ObjectMetadata
-	put() Object
+	Get(key string) (*Object, error)
+	GetMetadata(key string) (*ObjectMetadata, error)
+	Put(*Object) error
 }
