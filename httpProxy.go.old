@@ -16,6 +16,8 @@ import (
 	"github.com/fatih/color"
 )
 
+var counter uint64 = 0
+
 type InterceptConfig struct {
 	ConfigName     string          `json:"configName"`
 	InterceptLinks []InterceptLink `json:"interceptLinks"`

@@ -1,6 +1,5 @@
 build
 *.o
-proxy
 proxy.exe
 proxy_bpfeb.go
 proxy_bpfel.go

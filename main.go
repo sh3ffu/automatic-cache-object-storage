@@ -17,6 +17,11 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 )
+import (
+	"automatic-cache-object-storage/cache"
+	"automatic-cache-object-storage/objectStorage"
+	"automatic-cache-object-storage/proxy"
+)
 
 const (
 	CGROUP_PATH     = "/sys/fs/cgroup" // Root cgroup path
@@ -34,7 +39,7 @@ type SockAddrIn struct {
 	Pad [8]byte
 }
 
-var counter uint64 = 0
+var proxyModule *proxy.HttpCachingProxy
 
 // helper function for getsockopt
 func getsockopt(s int, level int, optname int, optval unsafe.Pointer, optlen *uint32) (err error) {
@@ -134,7 +139,8 @@ func handleConnection(conn net.Conn, bypassHttpHandler bool) {
 	// 	handleHttpConn(conn, targetAddr)
 	// }
 	if !bypassHttpHandler {
-		handleHttpConn(conn, targetAddr)
+		//handleHttpConn(conn, targetAddr)
+		proxyModule.HandleHttp(conn, targetAddr)
 	} else {
 		forwardConnection(conn, targetAddr)
 	}
@@ -143,7 +149,15 @@ func handleConnection(conn net.Conn, bypassHttpHandler bool) {
 
 func main() {
 	// Initialize the configuration from the interceptLinks.json file
-	initConfig()
+
+	objectStorage1 := objectStorage.NewDummyObjectStorageAdapter("host.lima.internal")
+
+	proxyModule = proxy.NewHttpCachingProxy(
+		cache.NewDummyPrinterCache(log.New(os.Stdout, "cache: ", log.LstdFlags), 1000),
+		[]objectStorage.ObjectStorage{
+			&objectStorage1,
+		},
+	)
 
 	bypassHttpHandler := false
 

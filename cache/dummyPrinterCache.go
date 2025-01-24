@@ -19,12 +19,12 @@ type DummyPrinterCache struct {
 }
 
 func calculateKey(meta *ObjectMetadata) string {
-	return meta.host + "/" + meta.bucket + "/" + meta.key
+	return meta.Host + "/" + meta.Bucket + "/" + meta.Key
 }
 
 func printMetadata(meta *ObjectMetadata, logger *log.Logger) {
 	if logger != nil {
-		logger.Printf("Object:  %s/%s/%s", meta.host, meta.bucket, meta.key)
+		logger.Printf("Object:  %s/%s/%s", meta.Host, meta.Bucket, meta.Key)
 	}
 }
 
@@ -32,13 +32,12 @@ func printObjectData(o *Object, logger *log.Logger) {
 	if logger == nil {
 		return
 	}
-	data, err := io.ReadAll(o.Reader)
+	data, err := io.ReadAll(bytes.NewReader(*o.Data))
 	if err != nil {
 		logger.Println("Error reading object data:", err)
 		return
 	}
 	fmt.Println("Object Data:", string(data))
-	o.Reader = bytes.NewReader(data) // Reset the reader to its original state
 }
 
 func (dpc *DummyPrinterCache) GetMetadata(key string) (*ObjectMetadata, error) {
@@ -55,12 +54,11 @@ func (dpc *DummyPrinterCache) GetMetadata(key string) (*ObjectMetadata, error) {
 
 }
 
-func (dpc *DummyPrinterCache) Get(key string) (*Object, error) {
-	dpc.lock.RLock()
-	defer dpc.lock.RUnlock()
-	obj, exists := dpc.store[key]
+func (dpc *DummyPrinterCache) Get(key string, initializer Initializer) (*Object, error) {
+	obj, exists := dpc.get(key)
 	if !exists {
-		return nil, fmt.Errorf("Object with key %s not found", key)
+		dpc.logger.Println("Attempting to retrieve object from remote:")
+		return dpc.initialize(key, initializer)
 	}
 
 	dpc.logger.Println("Object retrieved from cache:")
@@ -73,15 +71,6 @@ func (dpc *DummyPrinterCache) Get(key string) (*Object, error) {
 func (dpc *DummyPrinterCache) Put(o *Object) error {
 	dpc.lock.Lock()
 	defer dpc.lock.Unlock()
-	var objData bytes.Buffer
-	size, err := objData.ReadFrom(o)
-	if err != nil {
-		return err
-	}
-	if size > dpc.maxSize {
-		return fmt.Errorf("Object size %d exceeds maximum size %d", size, dpc.maxSize)
-	}
-	o.Reader = bytes.NewReader(objData.Bytes())
 	dpc.store[calculateKey(o.Metadata)] = o
 
 	dpc.logger.Println("Object stored in cache:")
@@ -89,6 +78,33 @@ func (dpc *DummyPrinterCache) Put(o *Object) error {
 	printObjectData(o, dpc.logger)
 	return nil
 
+}
+
+func (dpc *DummyPrinterCache) get(key string) (*Object, bool) {
+	dpc.lock.RLock()
+	defer dpc.lock.RUnlock()
+	obj, exists := dpc.store[key]
+	return obj, exists
+}
+
+func (dpc *DummyPrinterCache) initialize(key string, initializer Initializer) (*Object, error) {
+
+	data, exists := dpc.get(key)
+	if exists {
+		return data, nil
+	}
+
+	if initializer != nil {
+
+		obj, err := initializer()
+		if err != nil {
+			return nil, err
+		}
+		dpc.Put(obj)
+		return obj, nil
+
+	}
+	return nil, fmt.Errorf("Object with key %s not found", key)
 }
 
 func NewDummyPrinterCache(logger *log.Logger, maxSize int64) *DummyPrinterCache {
