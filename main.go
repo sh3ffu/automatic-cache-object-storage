@@ -120,13 +120,13 @@ func forwardConnection(conn net.Conn, targetAddr net.Addr) {
 func handleConnection(conn net.Conn, bypassHttpHandler bool) {
 	//defer conn.Close()
 
-	targetAddr, err := getOriginalTargetFromConn(conn)
+	targetAddr, err := getOriginalTargetFromConn(conn) // TODO: do this in separate goroutine
 	if err != nil {
 		log.Printf("Failed to get original destination: %v", err)
 		return
 	}
 
-	fmt.Printf("Original destination: %s\n", targetAddr.String())
+	//fmt.Printf("Original destination: %s\n", targetAddr.String())
 
 	// DEPRECATED: Check moved on the eBPF level
 	// Check if the target address is an HTTP server
@@ -147,13 +147,14 @@ func handleConnection(conn net.Conn, bypassHttpHandler bool) {
 
 }
 
-func main() {
+func run(w io.Writer) error {
+
 	// Initialize the configuration from the interceptLinks.json file
 
 	objectStorage1 := objectStorage.NewDummyObjectStorageAdapter("host.lima.internal")
 
 	proxyModule = proxy.NewHttpCachingProxy(
-		cache.NewDummyPrinterCache(log.New(os.Stdout, "cache: ", log.LstdFlags), 1000),
+		cache.NewDummyPrinterCache(log.New(w, "Cache: ", log.LstdFlags), 1000),
 		[]objectStorage.ObjectStorage{
 			&objectStorage1,
 		},
@@ -246,4 +247,11 @@ func main() {
 		go handleConnection(conn, bypassHttpHandler)
 	}
 
+}
+
+func main() {
+	if err := run(os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v", err)
+		os.Exit(1)
+	}
 }

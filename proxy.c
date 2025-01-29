@@ -16,7 +16,7 @@
                      ##__VA_ARGS__);           \
   })
 
-#define MAX_CONNECTIONS 20000
+#define MAX_CONNECTIONS 100000
 
 struct Config
 {

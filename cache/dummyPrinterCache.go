@@ -28,6 +28,12 @@ func printMetadata(meta *ObjectMetadata, logger *log.Logger) {
 	}
 }
 
+func printAction(action string, meta *ObjectMetadata, logger *log.Logger) {
+	if logger != nil {
+		logger.Printf("%s object: %s/%s/%s", action, meta.Host, meta.Bucket, meta.Key)
+	}
+}
+
 func printObjectData(o *Object, logger *log.Logger) {
 	if logger == nil {
 		return
@@ -48,7 +54,8 @@ func (dpc *DummyPrinterCache) GetMetadata(key string) (*ObjectMetadata, error) {
 		return nil, fmt.Errorf("Object with key %s not found", key)
 	}
 
-	printMetadata(obj.Metadata, dpc.logger)
+	//printMetadata(obj.Metadata, dpc.logger)
+	//go printAction("GetMetadata", obj.Metadata, dpc.logger)
 
 	return obj.Metadata, nil
 
@@ -57,13 +64,13 @@ func (dpc *DummyPrinterCache) GetMetadata(key string) (*ObjectMetadata, error) {
 func (dpc *DummyPrinterCache) Get(key string, initializer Initializer) (*Object, error) {
 	obj, exists := dpc.get(key)
 	if !exists {
-		dpc.logger.Println("Attempting to retrieve object from remote:")
+		//dpc.logger.Println("Attempting to retrieve object from remote:")
 		return dpc.initialize(key, initializer)
 	}
 
-	dpc.logger.Println("Object retrieved from cache:")
-	printMetadata(obj.Metadata, dpc.logger)
-	printObjectData(obj, dpc.logger)
+	//dpc.logger.Println("Object retrieved from cache:")
+	//printMetadata(obj.Metadata, dpc.logger)
+	//go printAction("Get", obj.Metadata, dpc.logger)
 
 	return obj, nil
 }
@@ -73,9 +80,12 @@ func (dpc *DummyPrinterCache) Put(o *Object) error {
 	defer dpc.lock.Unlock()
 	dpc.store[calculateKey(o.Metadata)] = o
 
-	dpc.logger.Println("Object stored in cache:")
-	printMetadata(o.Metadata, dpc.logger)
-	printObjectData(o, dpc.logger)
+	// dpc.logger.Println("Object stored in cache:")
+	// go printMetadata(o.Metadata, dpc.logger)
+	// printObjectData(o, dpc.logger)
+
+	//go printAction("Put", o.Metadata, dpc.logger)
+
 	return nil
 
 }

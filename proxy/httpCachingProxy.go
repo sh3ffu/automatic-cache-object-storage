@@ -23,7 +23,9 @@ func calculateKey(meta *cache.ObjectMetadata) string {
 	return meta.Host + "/" + meta.Bucket + "/" + meta.Key
 }
 
-func (p *HttpCachingProxy) HandleHttp(conn net.Conn, targetAddr net.Addr) {
+//var connectionCounter uint64 = 0
+
+func (p *HttpCachingProxy) handleHttpInternal(conn net.Conn, targetAddr net.Addr) {
 
 	defer conn.Close()
 
@@ -62,7 +64,18 @@ func (p *HttpCachingProxy) HandleHttp(conn net.Conn, targetAddr net.Addr) {
 				p.forward(conn, targetAddr, request)
 				return
 			}
-			response.Write(conn)
+
+			errChan := make(chan error)
+			var wg sync.WaitGroup
+
+			go p.sendLocalResponse(conn, response, errChan, &wg)
+
+			wg.Wait()
+			if err := <-errChan; err != nil {
+				log.Printf("Failed to send local response, forwarding connection: %v", err)
+				p.forward(conn, targetAddr, request)
+			}
+
 			return
 		} else {
 			// Log and forward
@@ -79,6 +92,14 @@ func (p *HttpCachingProxy) HandleHttp(conn net.Conn, targetAddr net.Addr) {
 
 }
 
+func (p *HttpCachingProxy) HandleHttp(conn net.Conn, targetAddr net.Addr) {
+	// Increment the counter for each http request
+	//connectionCounter++
+	//startTime := time.Now()
+	p.handleHttpInternal(conn, targetAddr)
+	//log.Printf("Request %d took %v", connectionCounter, time.Since(startTime))
+}
+
 func (p *HttpCachingProxy) shouldIntercept(req *http.Request) (bool, int) {
 	for i, adapter := range p.ObjectStorageAdapters {
 		if adapter.ShouldIntercept(req) {
@@ -86,6 +107,12 @@ func (p *HttpCachingProxy) shouldIntercept(req *http.Request) (bool, int) {
 		}
 	}
 	return false, -1
+}
+
+func (p *HttpCachingProxy) sendLocalResponse(conn net.Conn, res *http.Response, errChan chan error, wg *sync.WaitGroup) {
+	wg.Add(1)
+	err := res.Write(conn)
+	errChan <- err
 }
 
 func (p *HttpCachingProxy) retrieveObjectFromRemote(req *http.Request, objectMeta cache.ObjectMetadata) (*cache.Object, error) {
@@ -104,7 +131,6 @@ func (p *HttpCachingProxy) retrieveObjectFromRemote(req *http.Request, objectMet
 		defer res.Body.Close()
 
 		if res.StatusCode != http.StatusOK {
-			//TODO: handle non-OK responses
 			body, err := io.ReadAll(res.Body)
 			if err != nil {
 				errChan <- fmt.Errorf("could not read non-OK response body")
@@ -140,7 +166,6 @@ func (p *HttpCachingProxy) forward(conn net.Conn, targetAddr net.Addr, req *http
 
 	targetConn, err := net.Dial("tcp", targetAddr.String())
 	if err != nil {
-		//http.Error(conn, "Service Unavailable", http.StatusServiceUnavailable)
 		conn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\n\r\n"))
 		return
 	}
@@ -165,59 +190,6 @@ func (p *HttpCachingProxy) forward(conn net.Conn, targetAddr net.Addr, req *http
 
 	wg.Wait()
 }
-
-// func (p *HttpCachingProxy) cacheAndForward(conn net.Conn, targetAddr net.Addr, req *http.Request, metadata *cache.ObjectMetadata, adapter objectStorage.ObjectStorage) {
-
-// 	targetConn, err := net.Dial("tcp", targetAddr.String())
-// 	if err != nil {
-// 		conn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\n\r\n"))
-// 		return
-// 	}
-// 	defer targetConn.Close()
-
-// 	// Forward request
-// 	req.Write(targetConn)
-
-// 	// Read response and cache
-// 	resp, err := http.ReadResponse(bufio.NewReader(targetConn), req)
-// 	if err != nil {
-// 		conn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\n\r\n"))
-// 		return
-// 	}
-// 	defer resp.Body.Close()
-
-// 	conn.Write([]byte("HTTP/1.1 " + resp.Status + "\r\n"))
-
-// 	for k, v := range resp.Header {
-// 		conn.Write([]byte(k + ": " + strings.Join(v, ", ") + "\r\n"))
-// 	}
-// 	conn.Write([]byte("\r\n"))
-
-// 	// Print the response data and forward it to the client
-
-// 	// Create a multiwriter to write the response to the client and to the console
-// 	var buffer bytes.Buffer
-
-// 	multiWriter := io.MultiWriter(conn, bufio.NewWriter(&buffer))
-
-// 	_, copyErr := io.Copy(multiWriter, resp.Body)
-// 	// uncomment for mock response
-// 	//_, err := io.Copy(multiWriter, strings.NewReader(mockResponse))
-// 	conn.Close()
-
-// 	if copyErr != nil {
-// 		log.Printf("Failed to forward response body to client: %v", err)
-// 		return
-// 	}
-
-// 	// Create a new Object for caching
-// 	object := &cache.Object{
-// 		Reader:   bytes.NewReader(buffer.Bytes()),
-// 		Metadata: metadata,
-// 	}
-
-// 	p.Cache.Put(object)
-// }
 
 func NewHttpCachingProxy(cache cache.Cache, objectStorageAdapters []objectStorage.ObjectStorage) *HttpCachingProxy {
 	return &HttpCachingProxy{

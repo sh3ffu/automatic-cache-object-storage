@@ -42,9 +42,24 @@ func (dosa *DummyObjectStorageAdapter) ExtractObjectMeta(req *http.Request) (*ca
 func (dosa *DummyObjectStorageAdapter) CreateLocalResponse(object *cache.Object) (*http.Response, error) {
 
 	response := &http.Response{
-		StatusCode: http.StatusOK,
-		Body:       io.NopCloser(bytes.NewReader(*object.Data)),
+		Header:        http.Header{},
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		StatusCode:    http.StatusOK,
+		ContentLength: int64(len(*object.Data)),
+		Body:          io.NopCloser(bytes.NewReader(*object.Data)),
 	}
+
+	response.Header.Add("Content-Type", "application/octet-stream")
+
+	//print response
+
+	// var stringBuilder strings.Builder
+
+	// response.Write(&stringBuilder)
+
+	// log.Default().Println("response: " + stringBuilder.String())
 
 	return response, nil
 }
