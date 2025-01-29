@@ -1,23 +1,20 @@
 package cache
 
-import (
-	"io"
-)
-
 type ObjectMetadata struct {
-	host   string
-	bucket string
-	key    string
+	Host   string
+	Bucket string
+	Key    string
 }
 
 type Object struct {
-	io.Reader
-	io.Writer
+	Data     *[]byte
 	Metadata *ObjectMetadata
 }
 
+type Initializer func() (*Object, error)
+
 type Cache interface {
-	Get(key string) (*Object, error)
+	Get(key string, initializer Initializer) (*Object, error)
 	GetMetadata(key string) (*ObjectMetadata, error)
 	Put(*Object) error
 }

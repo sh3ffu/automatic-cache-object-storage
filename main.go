@@ -17,6 +17,11 @@ import (
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
 )
+import (
+	"automatic-cache-object-storage/cache"
+	"automatic-cache-object-storage/objectStorage"
+	"automatic-cache-object-storage/proxy"
+)
 
 const (
 	CGROUP_PATH     = "/sys/fs/cgroup" // Root cgroup path
@@ -34,7 +39,7 @@ type SockAddrIn struct {
 	Pad [8]byte
 }
 
-var counter uint64 = 0
+var proxyModule *proxy.HttpCachingProxy
 
 // helper function for getsockopt
 func getsockopt(s int, level int, optname int, optval unsafe.Pointer, optlen *uint32) (err error) {
@@ -115,13 +120,13 @@ func forwardConnection(conn net.Conn, targetAddr net.Addr) {
 func handleConnection(conn net.Conn, bypassHttpHandler bool) {
 	//defer conn.Close()
 
-	targetAddr, err := getOriginalTargetFromConn(conn)
+	targetAddr, err := getOriginalTargetFromConn(conn) // TODO: do this in separate goroutine
 	if err != nil {
 		log.Printf("Failed to get original destination: %v", err)
 		return
 	}
 
-	fmt.Printf("Original destination: %s\n", targetAddr.String())
+	//fmt.Printf("Original destination: %s\n", targetAddr.String())
 
 	// DEPRECATED: Check moved on the eBPF level
 	// Check if the target address is an HTTP server
@@ -134,16 +139,26 @@ func handleConnection(conn net.Conn, bypassHttpHandler bool) {
 	// 	handleHttpConn(conn, targetAddr)
 	// }
 	if !bypassHttpHandler {
-		handleHttpConn(conn, targetAddr)
+		//handleHttpConn(conn, targetAddr)
+		proxyModule.HandleHttp(conn, targetAddr)
 	} else {
 		forwardConnection(conn, targetAddr)
 	}
 
 }
 
-func main() {
+func run(w io.Writer) error {
+
 	// Initialize the configuration from the interceptLinks.json file
-	initConfig()
+
+	objectStorage1 := objectStorage.NewDummyObjectStorageAdapter("host.lima.internal")
+
+	proxyModule = proxy.NewHttpCachingProxy(
+		cache.NewDummyPrinterCache(log.New(w, "Cache: ", log.LstdFlags), 1000),
+		[]objectStorage.ObjectStorage{
+			&objectStorage1,
+		},
+	)
 
 	bypassHttpHandler := false
 
@@ -232,4 +247,11 @@ func main() {
 		go handleConnection(conn, bypassHttpHandler)
 	}
 
+}
+
+func main() {
+	if err := run(os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v", err)
+		os.Exit(1)
+	}
 }
