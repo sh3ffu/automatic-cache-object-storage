@@ -179,6 +179,10 @@ int cg_sock_opt(struct bpf_sockopt *ctx)
 
   bpf_printk("Redirecting connection to original destination\n");
 
+  // Delete the entries from the maps
+  bpf_map_delete_elem(&map_ports, &src_port);
+  bpf_map_delete_elem(&map_socks, cookie);
+
   return 1;
 }
 
