@@ -1,9 +1,7 @@
 package cache
 
 import (
-	"bytes"
 	"fmt"
-	"io"
 	"log"
 	"sync"
 )
@@ -22,29 +20,29 @@ func calculateKey(meta *ObjectMetadata) string {
 	return meta.Host + "/" + meta.Bucket + "/" + meta.Key
 }
 
-func printMetadata(meta *ObjectMetadata, logger *log.Logger) {
-	if logger != nil {
-		logger.Printf("Object:  %s/%s/%s", meta.Host, meta.Bucket, meta.Key)
-	}
-}
+// func printMetadata(meta *ObjectMetadata, logger *log.Logger) {
+// 	if logger != nil {
+// 		logger.Printf("Object:  %s/%s/%s", meta.Host, meta.Bucket, meta.Key)
+// 	}
+// }
 
-func printAction(action string, meta *ObjectMetadata, logger *log.Logger) {
-	if logger != nil {
-		logger.Printf("%s object: %s/%s/%s", action, meta.Host, meta.Bucket, meta.Key)
-	}
-}
+// func printAction(action string, meta *ObjectMetadata, logger *log.Logger) {
+// 	if logger != nil {
+// 		logger.Printf("%s object: %s/%s/%s", action, meta.Host, meta.Bucket, meta.Key)
+// 	}
+// }
 
-func printObjectData(o *Object, logger *log.Logger) {
-	if logger == nil {
-		return
-	}
-	data, err := io.ReadAll(bytes.NewReader(*o.Data))
-	if err != nil {
-		logger.Println("Error reading object data:", err)
-		return
-	}
-	fmt.Println("Object Data:", string(data))
-}
+// func printObjectData(o *Object, logger *log.Logger) {
+// 	if logger == nil {
+// 		return
+// 	}
+// 	data, err := io.ReadAll(bytes.NewReader(*o.Data))
+// 	if err != nil {
+// 		logger.Println("Error reading object data:", err)
+// 		return
+// 	}
+// 	fmt.Println("Object Data:", string(data))
+// }
 
 func (dpc *DummyPrinterCache) GetMetadata(key string) (*ObjectMetadata, error) {
 	dpc.lock.RLock()
@@ -121,6 +119,6 @@ func NewDummyPrinterCache(logger *log.Logger, maxSize int64) *DummyPrinterCache 
 	return &DummyPrinterCache{
 		logger:  logger,
 		maxSize: maxSize,
-		store:   make(map[string]*Object),
+		store:   make(map[string]*Object, 400),
 	}
 }
