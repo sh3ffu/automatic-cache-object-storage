@@ -9,25 +9,31 @@ import (
 	"log"
 	"net"
 	"os"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
 
+	_ "net/http/pprof"
+
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/rlimit"
+	"github.com/fatih/color"
 )
 import (
 	"automatic-cache-object-storage/cache"
 	"automatic-cache-object-storage/objectStorage"
 	"automatic-cache-object-storage/proxy"
+	"net/http"
 )
 
 const (
 	CGROUP_PATH     = "/sys/fs/cgroup" // Root cgroup path
 	PROXY_PORT      = 18000            // Port where the proxy server listens
 	SO_ORIGINAL_DST = 80               // Socket option to get the original destination address
-	MAX_BUFFER_SIZE = 2048             // Maximum buffer size for reading data from the connection
+	MAX_BUFFER_SIZE = 100000           // Maximum buffer size for reading data from the connection
+	MAX_WORKERS     = 10000            // Maximum number of workers in the worker pool
 )
 
 // SockAddrIn is a struct to hold the sockaddr_in structure for IPv4 "retrieved" by the SO_ORIGINAL_DST.
@@ -39,7 +45,19 @@ type SockAddrIn struct {
 	Pad [8]byte
 }
 
+type ConnectionCounter struct {
+	connections int
+	sync.Mutex
+}
+
+type ProxyTask struct {
+	conn net.Conn
+	id   int
+}
+
 var proxyModule *proxy.HttpCachingProxy
+var cacheModule cache.Cache
+var connectionCounter ConnectionCounter
 
 // helper function for getsockopt
 func getsockopt(s int, level int, optname int, optval unsafe.Pointer, optlen *uint32) (err error) {
@@ -118,7 +136,6 @@ func forwardConnection(conn net.Conn, targetAddr net.Addr) {
 
 // HTTP proxy request handler
 func handleConnection(conn net.Conn, bypassHttpHandler bool) {
-	//defer conn.Close()
 
 	targetAddr, err := getOriginalTargetFromConn(conn) // TODO: do this in separate goroutine
 	if err != nil {
@@ -128,16 +145,6 @@ func handleConnection(conn net.Conn, bypassHttpHandler bool) {
 
 	//fmt.Printf("Original destination: %s\n", targetAddr.String())
 
-	// DEPRECATED: Check moved on the eBPF level
-	// Check if the target address is an HTTP server
-	// if strings.Split(targetAddr.String(), ":")[1] != "80" {
-	// 	log.Printf("Non-http traffic detected")
-	// 	forwardConnection(conn, targetAddr)
-	// 	return
-	// } else {
-	// 	log.Printf("http traffic detected")
-	// 	handleHttpConn(conn, targetAddr)
-	// }
 	if !bypassHttpHandler {
 		//handleHttpConn(conn, targetAddr)
 		proxyModule.HandleHttp(conn, targetAddr)
@@ -147,27 +154,45 @@ func handleConnection(conn net.Conn, bypassHttpHandler bool) {
 
 }
 
+func proxyWorker(id int, jobs <-chan ProxyTask, results chan<- int) {
+
+	fmt.Printf("Worker %d started\n", id)
+	for job := range jobs {
+		handleConnection(job.conn, false)
+		results <- 0
+	}
+
+}
+
 func run(w io.Writer) error {
+
+	//pprof init
+	go func() {
+		log.Println(http.ListenAndServe("localhost:6060", nil))
+	}()
 
 	// Initialize the configuration from the interceptLinks.json file
 
 	objectStorage1 := objectStorage.NewDummyObjectStorageAdapter("host.lima.internal")
 
+	cacheModule = cache.NewBigcacheWrapper(log.New(w, "Cache: ", log.LstdFlags), 1000)
+
 	proxyModule = proxy.NewHttpCachingProxy(
-		cache.NewDummyPrinterCache(log.New(w, "Cache: ", log.LstdFlags), 1000),
+		// cache.NewDummyPrinterCache(log.New(w, "Cache: ", log.LstdFlags), 1000),
+		cacheModule,
 		[]objectStorage.ObjectStorage{
 			&objectStorage1,
 		},
 	)
 
-	bypassHttpHandler := false
+	// bypassHttpHandler := false
 
-	args := os.Args[1:]
-	if len(args) > 0 {
-		if args[0] == "--bypass" {
-			bypassHttpHandler = true
-		}
-	}
+	// args := os.Args[1:]
+	// if len(args) > 0 {
+	// 	if args[0] == "--bypass" {
+	// 		bypassHttpHandler = true
+	// 	}
+	// }
 
 	// Remove resource limits for kernels <5.11.
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -214,7 +239,6 @@ func run(w io.Writer) error {
 	defer sockoptLink.Close()
 
 	// Start the proxy server on the localhost
-	// We only demonstrate IPv4 in this example, but the same approach can be used for IPv6
 	proxyAddr := fmt.Sprintf("127.0.0.1:%d", PROXY_PORT)
 
 	// Start the proxy server
@@ -237,6 +261,15 @@ func run(w io.Writer) error {
 	}
 
 	log.Printf("Proxy server with PID %d listening on %s", os.Getpid(), proxyAddr)
+
+	// Setup worker pool
+	jobQueue := make(chan ProxyTask, MAX_BUFFER_SIZE)
+	done := make(chan int, MAX_BUFFER_SIZE)
+
+	for i := 0; i < MAX_WORKERS; i++ {
+		go proxyWorker(i, jobQueue, done)
+	}
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -244,9 +277,35 @@ func run(w io.Writer) error {
 			continue
 		}
 
-		go handleConnection(conn, bypassHttpHandler)
+		// Handle the connection in a separate goroutine
+		// done := make(chan struct{})
+		// go handleConnection(conn, bypassHttpHandler, &connCounter, done)
+
+		// Increment the connection counter
+		connectionCounter.Lock()
+		connectionCounter.connections++
+		connectionCounter.Unlock()
+		displayConnections(&connectionCounter)
+
+		// Add the connection to the job queue
+		jobQueue <- ProxyTask{conn: conn}
+
+		// Update current connection display
+		go func() {
+			<-done
+			connectionCounter.Lock()
+			connectionCounter.connections--
+			connectionCounter.Unlock()
+			displayConnections(&connectionCounter)
+		}()
+
 	}
 
+}
+
+func displayConnections(connectionCounter *ConnectionCounter) {
+	countFormat := color.New(color.FgGreen).Add(color.Bold).SprintfFunc()
+	fmt.Printf("Connections: %s\r", countFormat("%d/100000", connectionCounter.connections))
 }
 
 func main() {

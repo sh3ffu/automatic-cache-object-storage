@@ -1,5 +1,10 @@
 package cache
 
+import (
+	"fmt"
+	"strings"
+)
+
 type ObjectMetadata struct {
 	Host   string
 	Bucket string
@@ -17,4 +22,17 @@ type Cache interface {
 	Get(key string, initializer Initializer) (*Object, error)
 	GetMetadata(key string) (*ObjectMetadata, error)
 	Put(*Object) error
+}
+
+func NewMetadata(key string) (*ObjectMetadata, error) {
+	splitted := strings.Split(key, "/")
+	if len(splitted) != 3 {
+		return nil, fmt.Errorf("invalid key format: %s", key)
+	}
+	return &ObjectMetadata{
+		Host:   splitted[0],
+		Bucket: splitted[1],
+		Key:    splitted[2],
+	}, nil
+
 }
