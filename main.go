@@ -32,7 +32,8 @@ const (
 	CGROUP_PATH     = "/sys/fs/cgroup" // Root cgroup path
 	PROXY_PORT      = 18000            // Port where the proxy server listens
 	SO_ORIGINAL_DST = 80               // Socket option to get the original destination address
-	MAX_BUFFER_SIZE = 2048             // Maximum buffer size for reading data from the connection
+	MAX_BUFFER_SIZE = 100000           // Maximum buffer size for reading data from the connection
+	MAX_WORKERS     = 10000            // Maximum number of workers in the worker pool
 )
 
 // SockAddrIn is a struct to hold the sockaddr_in structure for IPv4 "retrieved" by the SO_ORIGINAL_DST.
@@ -154,6 +155,7 @@ func handleConnection(conn net.Conn, bypassHttpHandler bool) {
 }
 
 func proxyWorker(id int, jobs <-chan ProxyTask, results chan<- int) {
+
 	fmt.Printf("Worker %d started\n", id)
 	for job := range jobs {
 		handleConnection(job.conn, false)
@@ -261,10 +263,10 @@ func run(w io.Writer) error {
 	log.Printf("Proxy server with PID %d listening on %s", os.Getpid(), proxyAddr)
 
 	// Setup worker pool
-	jobQueue := make(chan ProxyTask)
-	done := make(chan int)
+	jobQueue := make(chan ProxyTask, MAX_BUFFER_SIZE)
+	done := make(chan int, MAX_BUFFER_SIZE)
 
-	for i := 0; i < 500; i++ {
+	for i := 0; i < MAX_WORKERS; i++ {
 		go proxyWorker(i, jobQueue, done)
 	}
 

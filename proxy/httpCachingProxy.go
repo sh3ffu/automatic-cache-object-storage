@@ -65,13 +65,11 @@ func (p *HttpCachingProxy) handleHttpInternal(conn net.Conn, targetAddr net.Addr
 				return
 			}
 
-			errChan := make(chan error)
-			var wg sync.WaitGroup
+			//SOLVED: Hanging was caused here, because the response was written in a separate goroutine
 
-			go p.sendLocalResponse(conn, response, errChan, &wg)
+			err = response.Write(conn)
 
-			wg.Wait()
-			if err := <-errChan; err != nil {
+			if err != nil {
 				log.Printf("Failed to send local response, forwarding connection: %v", err)
 				p.forward(conn, targetAddr, request)
 			}
@@ -108,13 +106,6 @@ func (p *HttpCachingProxy) shouldIntercept(req *http.Request) (bool, int) {
 	}
 	return false, -1
 }
-
-func (p *HttpCachingProxy) sendLocalResponse(conn net.Conn, res *http.Response, errChan chan error, wg *sync.WaitGroup) {
-	wg.Add(1)
-	err := res.Write(conn)
-	errChan <- err
-}
-
 func (p *HttpCachingProxy) retrieveObjectFromRemote(req *http.Request, objectMeta cache.ObjectMetadata) (*cache.Object, error) {
 
 	// Retrieve object from remote storage
