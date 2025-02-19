@@ -8,7 +8,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"sync"
 
 	"automatic-cache-object-storage/cache"
 	"automatic-cache-object-storage/objectStorage"
@@ -23,21 +22,16 @@ func calculateKey(meta *cache.ObjectMetadata) string {
 	return meta.Host + "/" + meta.Bucket + "/" + meta.Key
 }
 
-//var connectionCounter uint64 = 0
-
 func (p *HttpCachingProxy) handleHttpInternal(conn net.Conn, targetAddr net.Addr) {
 
 	defer conn.Close()
 
-	//TODO: try to use raw request instead of http.Request
-	request, _, err := pipeRequest(conn)
+	request, err := http.ReadRequest(bufio.NewReader(conn))
 
 	if err != nil {
-		//TODO: forward request directly
+		log.Printf("Failed to read request: %v", err)
 		return
 	}
-
-	fixRequest(request)
 
 	shouldIntercept, adapterIndex := p.shouldIntercept(request)
 
@@ -51,12 +45,13 @@ func (p *HttpCachingProxy) handleHttpInternal(conn net.Conn, targetAddr net.Addr
 		}
 
 		initializer := func() (*cache.Object, error) {
-			return p.retrieveObjectFromRemote(request, *objectMeta)
+			return p.retrieveObjectFromRemote(request, targetAddr, *objectMeta)
 		}
 
 		cachedObj, err := p.Cache.Get(calculateKey(objectMeta), initializer)
 		if err == nil {
 			// Cache hit - Serve from cache
+
 			response, err := adapter.CreateLocalResponse(cachedObj)
 			if err != nil {
 				// Log and forward
@@ -64,8 +59,6 @@ func (p *HttpCachingProxy) handleHttpInternal(conn net.Conn, targetAddr net.Addr
 				p.forward(conn, targetAddr, request)
 				return
 			}
-
-			//SOLVED: Hanging was caused here, because the response was written in a separate goroutine
 
 			err = response.Write(conn)
 
@@ -87,18 +80,14 @@ func (p *HttpCachingProxy) handleHttpInternal(conn net.Conn, targetAddr net.Addr
 	// Request should not be intercepted - Forward request
 
 	p.forward(conn, targetAddr, request)
-
 }
 
 func (p *HttpCachingProxy) HandleHttp(conn net.Conn, targetAddr net.Addr) {
-	// Increment the counter for each http request
-	//connectionCounter++
-	//startTime := time.Now()
 	p.handleHttpInternal(conn, targetAddr)
-	//log.Printf("Request %d took %v", connectionCounter, time.Since(startTime))
 }
 
 func (p *HttpCachingProxy) shouldIntercept(req *http.Request) (bool, int) {
+
 	for i, adapter := range p.ObjectStorageAdapters {
 		if adapter.ShouldIntercept(req) {
 			return true, i
@@ -106,7 +95,7 @@ func (p *HttpCachingProxy) shouldIntercept(req *http.Request) (bool, int) {
 	}
 	return false, -1
 }
-func (p *HttpCachingProxy) retrieveObjectFromRemote(req *http.Request, objectMeta cache.ObjectMetadata) (*cache.Object, error) {
+func (p *HttpCachingProxy) retrieveObjectFromRemote(req *http.Request, targetAddr net.Addr, objectMeta cache.ObjectMetadata) (*cache.Object, error) {
 
 	// Retrieve object from remote storage
 
@@ -114,12 +103,25 @@ func (p *HttpCachingProxy) retrieveObjectFromRemote(req *http.Request, objectMet
 	objChan := make(chan *cache.Object)
 
 	go func() {
-		res, err := http.DefaultClient.Do(req)
+
+		targetConn, err := net.Dial("tcp", targetAddr.String())
 		if err != nil {
-			errChan <- err
+			errChan <- fmt.Errorf("failed to connect to target: %v", err)
 			return
 		}
-		defer res.Body.Close()
+		defer targetConn.Close()
+
+		err = req.Write(targetConn)
+		if err != nil {
+			errChan <- fmt.Errorf("failed to send request to target: %v", err)
+			return
+		}
+
+		res, err := http.ReadResponse(bufio.NewReader(targetConn), req)
+		if err != nil {
+			errChan <- fmt.Errorf("failed to read response from target: %v", err)
+			return
+		}
 
 		if res.StatusCode != http.StatusOK {
 			body, err := io.ReadAll(res.Body)
@@ -139,6 +141,7 @@ func (p *HttpCachingProxy) retrieveObjectFromRemote(req *http.Request, objectMet
 			return
 		}
 		data := buffer.Bytes()
+		objectMeta.OriginalHeaders = res.Header
 		object := &cache.Object{
 			Metadata: &objectMeta,
 			Data:     &data,
@@ -165,21 +168,13 @@ func (p *HttpCachingProxy) forward(conn net.Conn, targetAddr net.Addr, req *http
 	// Forward request
 	req.Write(targetConn)
 
-	// Pipe data between connections
-	var wg sync.WaitGroup
-	wg.Add(2)
-
-	go func() {
-		defer wg.Done()
-		io.Copy(conn, targetConn)
-	}()
-
-	go func() {
-		defer wg.Done()
-		io.Copy(targetConn, conn)
-	}()
-
-	wg.Wait()
+	// Forward response
+	res, err := http.ReadResponse(bufio.NewReader(targetConn), req)
+	if err != nil {
+		conn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\n\r\n"))
+		return
+	}
+	res.Write(conn)
 }
 
 func NewHttpCachingProxy(cache cache.Cache, objectStorageAdapters []objectStorage.ObjectStorage) *HttpCachingProxy {
@@ -187,20 +182,4 @@ func NewHttpCachingProxy(cache cache.Cache, objectStorageAdapters []objectStorag
 		Cache:                 cache,
 		ObjectStorageAdapters: objectStorageAdapters,
 	}
-}
-
-func pipeRequest(conn net.Conn) (*http.Request, *bytes.Buffer, error) {
-
-	var buffer bytes.Buffer
-
-	parserTee := io.TeeReader(conn, &buffer)
-
-	request, err := http.ReadRequest(bufio.NewReader(parserTee))
-
-	if err != nil {
-		return nil, nil, err
-	}
-
-	return request, &buffer, nil
-
 }

@@ -67,8 +67,8 @@ int cg_connect4(struct bpf_sock_addr *ctx)
   if (ctx->protocol != IPPROTO_TCP)
     return 1;
 
-  // Only forward HTTP connections
-  if (ctx->user_port != htons(80))
+  // Only forward HTTP connections (default http and local minio port)
+  if (ctx->user_port != htons(9000))
     return 1;
 
   // This prevents the proxy from proxying itself
@@ -98,7 +98,7 @@ int cg_connect4(struct bpf_sock_addr *ctx)
   ctx->user_ip4 = htonl(0x7f000001);              // 127.0.0.1 == proxy IP
   ctx->user_port = htonl(conf->proxy_port << 16); // Proxy port
 
-  bpf_printk("Redirecting client connection to proxy\n");
+  bpf_printk("Redirecting client connection to proxy: %d:%d\n", dst_addr, dst_port);
 
   return 1;
 }

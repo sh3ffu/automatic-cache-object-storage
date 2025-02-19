@@ -8,7 +8,6 @@ import (
 	"log"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -34,6 +33,7 @@ var interceptConfig InterceptConfig = InterceptConfig{
 }
 
 type HttpPrintingProxy struct {
+	HttpProxy
 }
 
 func (h *HttpPrintingProxy) HandleHttp(conn net.Conn, targetAddr net.Addr) {
@@ -97,7 +97,7 @@ func printResponse(r io.Reader, response *http.Response, id uint64, ready chan s
 		n, err :=
 			r.Read(buffer)
 		if err != nil {
-			if err == io.EOF {
+			if err == io.EOF || err == io.ErrClosedPipe {
 				break
 			} else {
 				log.Println("Print: Error reading response data:", err)
@@ -128,7 +128,6 @@ func handleHttpConn(conn net.Conn, targetAddr net.Addr) {
 
 	ready := make(chan struct{})
 	printRequestReady := make(chan struct{})
-	handleResponseReady := make(chan struct{})
 
 	pr, pw := io.Pipe()
 	printTee := io.TeeReader(conn, pw)
@@ -145,7 +144,7 @@ func handleHttpConn(conn net.Conn, targetAddr net.Addr) {
 			log.Printf("HandleHttp: Failed to parse HTTP request: %v", err)
 			return
 		}
-		fixRequest(request)
+		//fixRequest(request)
 
 		if shouldIntercept(request) {
 			// Intercept the request
@@ -153,15 +152,10 @@ func handleHttpConn(conn net.Conn, targetAddr net.Addr) {
 
 			log.Printf("Intercepting request %d", counter)
 
-			response, err := forwardHttpRequest(*request)
+			err := intercept(*request, conn, targetAddr, counter)
 			if err != nil {
-				log.Printf("Failed to forward http request to server: %v", err)
+				log.Printf("Failed to intercept request: %v", err)
 				return
-			} else {
-				log.Printf("Attempting to forward response to client")
-
-				// Print the response data
-				handleResponse(response, conn, counter)
 			}
 		} else {
 			// Request is not of interest, connect the client to the server directly
@@ -175,49 +169,6 @@ func handleHttpConn(conn net.Conn, targetAddr net.Addr) {
 
 	<-ready
 	<-printRequestReady
-	<-handleResponseReady
-
-}
-
-func handleResponse(response *http.Response, conn net.Conn, id uint64) {
-	defer response.Body.Close()
-	//defer conn.Close()
-
-	// mockResponse := "HTTP/1.1 200 OK\r\n" +
-	// 	"Content-Type: text/html\r\n" +
-	// 	"Content-Length: 11\r\n" +
-	// 	"\r\n" +
-	// 	"Hello World" +
-	// 	"\r\n"
-
-	conn.Write([]byte("HTTP/1.1 " + response.Status + "\r\n"))
-
-	for k, v := range response.Header {
-		conn.Write([]byte(k + ": " + strings.Join(v, ", ") + "\r\n"))
-	}
-	conn.Write([]byte("\r\n"))
-
-	// Print the response data and forward it to the client
-
-	// Create a multiwriter to write the response to the client and to the console
-	consolePipeReader, consolePipeWriter := io.Pipe()
-	defer consolePipeReader.Close()
-	defer consolePipeWriter.Close()
-
-	multiWriter := io.MultiWriter(conn, consolePipeWriter)
-
-	printReady := make(chan struct{})
-	go printResponse(consolePipeReader, response, id, printReady)
-	_, err := io.Copy(multiWriter, response.Body)
-	// uncomment for mock response
-	//_, err := io.Copy(multiWriter, strings.NewReader(mockResponse))
-	conn.Close()
-
-	if err != nil {
-		log.Printf("Failed to forward response body to client: %v", err)
-		return
-	}
-	<-printReady
 
 }
 
@@ -227,6 +178,7 @@ func parseHttpRequest(r io.Reader) (*http.Request, error) {
 	if err != nil {
 		return nil, err
 	}
+	request.URL.Host = request.Host
 	return request, nil
 }
 
@@ -244,47 +196,54 @@ func shouldIntercept(request *http.Request) bool {
 	return false
 }
 
-/*
-The following function is used to fix the URL and URI fields of the request
-so that the request can be forwarded correctly
-*/
-func fixRequest(request *http.Request) {
-	//remove the request URI
-	request.RequestURI = ""
+func intercept(request http.Request, conn net.Conn, targetAddr net.Addr, counter uint64) error {
 
-	// Fix the URL field
-	host := request.Host
-	path := request.URL.Path
-
-	newURL, err := url.Parse(fmt.Sprintf("http://%s%s", host, path))
+	targetConn, err := net.DialTimeout("tcp", targetAddr.String(), 5*time.Second)
 	if err != nil {
-		log.Printf("fixUrl: error parsing url %v", err)
+		return fmt.Errorf("failed to connect to original destination: %w", err)
 	}
-	request.URL = newURL
+
+	request.Write(targetConn)
+
+	resChan := make(chan *http.Response)
+
+	go func() {
+		res, err := http.ReadResponse(bufio.NewReader(targetConn), &request)
+		if err != nil {
+			log.Printf("Failed to read response from target: %v", err)
+			resChan <- nil
+			return
+		}
+		resChan <- res
+	}()
+
+	go func() {
+		defer targetConn.Close()
+		defer conn.Close()
+		res := <-resChan
+		if res != nil {
+			// Print the response data and forward it to the client
+
+			// Create a multiwriter to write the response to the client and to the console
+			consolePipeReader, consolePipeWriter := io.Pipe()
+			defer consolePipeReader.Close()
+			defer consolePipeWriter.Close()
+
+			multiWriter := io.MultiWriter(conn, consolePipeWriter)
+
+			go printResponse(consolePipeReader, res, counter, nil)
+
+			// Write the headers first
+			err := res.Write(multiWriter)
+			if err != nil {
+				log.Printf("Failed to write response headers to client: %v", err)
+				return
+			}
+		}
+	}()
+
+	return nil
 }
-
-func forwardHttpRequest(request http.Request) (*http.Response, error) {
-
-	res, err := http.DefaultClient.Do(&request)
-	if err != nil {
-		return nil, err
-	}
-	return res, nil
-}
-
-// /* Writes a response to the provided connection */
-// func writeResponseToConn(response http.Response, conn net.Conn) {
-// 	// Write the response to the client
-// 	conn.Write([]byte("HTTP/1.1 " + response.Status + "\r\n"))
-// 	for k, v := range response.Header {
-// 		conn.Write([]byte(k + ": " + strings.Join(v, ", ") + "\r\n"))
-// 	}
-// 	conn.Write([]byte("\r\n"))
-// 	_, err := io.Copy(conn, response.Body)
-// 	if err != nil {
-// 		log.Printf("Failed to write response data to conn: %v", err)
-// 	}
-// }
 
 /* Connects the client to the server directly */
 func connectClientToServerDirectly(conn net.Conn, targetAddr net.Addr, request *http.Request) {

@@ -33,8 +33,10 @@ const (
 	PROXY_PORT      = 18000            // Port where the proxy server listens
 	SO_ORIGINAL_DST = 80               // Socket option to get the original destination address
 	MAX_BUFFER_SIZE = 100000           // Maximum buffer size for reading data from the connection
-	MAX_WORKERS     = 10000            // Maximum number of workers in the worker pool
+	MAX_WORKERS     = 10               // Maximum number of workers in the worker pool
 )
+
+var bypassHttpHandler bool = false
 
 // SockAddrIn is a struct to hold the sockaddr_in structure for IPv4 "retrieved" by the SO_ORIGINAL_DST.
 type SockAddrIn struct {
@@ -55,7 +57,7 @@ type ProxyTask struct {
 	id   int
 }
 
-var proxyModule *proxy.HttpCachingProxy
+var proxyModule proxy.HttpProxy
 var cacheModule cache.Cache
 var connectionCounter ConnectionCounter
 
@@ -135,15 +137,13 @@ func forwardConnection(conn net.Conn, targetAddr net.Addr) {
 }
 
 // HTTP proxy request handler
-func handleConnection(conn net.Conn, bypassHttpHandler bool) {
+func handleConnection(conn net.Conn) {
 
 	targetAddr, err := getOriginalTargetFromConn(conn) // TODO: do this in separate goroutine
 	if err != nil {
 		log.Printf("Failed to get original destination: %v", err)
 		return
 	}
-
-	//fmt.Printf("Original destination: %s\n", targetAddr.String())
 
 	if !bypassHttpHandler {
 		//handleHttpConn(conn, targetAddr)
@@ -158,41 +158,58 @@ func proxyWorker(id int, jobs <-chan ProxyTask, results chan<- int) {
 
 	fmt.Printf("Worker %d started\n", id)
 	for job := range jobs {
-		handleConnection(job.conn, false)
+		//fmt.Printf("Worker %d processing job %d\n", id, job.id)
+		handleConnection(job.conn)
 		results <- 0
+		//fmt.Printf("Worker %d finished job %d\n", id, job.id)
 	}
 
 }
 
 func run(w io.Writer) error {
 
-	//pprof init
+	// Start the pprof server
 	go func() {
 		log.Println(http.ListenAndServe("localhost:6060", nil))
 	}()
 
 	// Initialize the configuration from the interceptLinks.json file
 
-	objectStorage1 := objectStorage.NewDummyObjectStorageAdapter("host.lima.internal")
+	//objectStorage1 := objectStorage.NewDummyObjectStorageAdapter("host.lima.internal")
+	minioObjStorage := objectStorage.NewMinIOAdapter("host.lima.internal:9000")
 
+	// Memcached client
+
+	/* memcachedClient := cache.NewMemcachedClient(log.New(w, "Cache: ", log.LstdFlags), 120, "localhost:11211")
+
+	err := memcachedClient.TestConnection()
+	if err != nil {
+		log.Fatalf("Failed to connect to memcached: %v", err)
+	}
+
+	cacheModule = memcachedClient */
+
+	//Bigcache client
 	cacheModule = cache.NewBigcacheWrapper(log.New(w, "Cache: ", log.LstdFlags), 1000)
 
 	proxyModule = proxy.NewHttpCachingProxy(
 		// cache.NewDummyPrinterCache(log.New(w, "Cache: ", log.LstdFlags), 1000),
 		cacheModule,
 		[]objectStorage.ObjectStorage{
-			&objectStorage1,
+			//&objectStorage1,
+			&minioObjStorage,
 		},
 	)
 
-	// bypassHttpHandler := false
+	//Uncomment for Printing proxy
+	//proxyModule = proxy.NewHttpPrintingProxy()
 
-	// args := os.Args[1:]
-	// if len(args) > 0 {
-	// 	if args[0] == "--bypass" {
-	// 		bypassHttpHandler = true
-	// 	}
-	// }
+	args := os.Args[1:]
+	if len(args) > 0 {
+		if args[0] == "--bypass" {
+			bypassHttpHandler = true
+		}
+	}
 
 	// Remove resource limits for kernels <5.11.
 	if err := rlimit.RemoveMemlock(); err != nil {
@@ -270,16 +287,14 @@ func run(w io.Writer) error {
 		go proxyWorker(i, jobQueue, done)
 	}
 
+	var jobIndex = 0
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
 			log.Printf("Failed to accept connection: %v", err)
 			continue
 		}
-
-		// Handle the connection in a separate goroutine
-		// done := make(chan struct{})
-		// go handleConnection(conn, bypassHttpHandler, &connCounter, done)
 
 		// Increment the connection counter
 		connectionCounter.Lock()
@@ -288,7 +303,8 @@ func run(w io.Writer) error {
 		displayConnections(&connectionCounter)
 
 		// Add the connection to the job queue
-		jobQueue <- ProxyTask{conn: conn}
+		jobIndex++
+		jobQueue <- ProxyTask{conn: conn, id: jobIndex}
 
 		// Update current connection display
 		go func() {
