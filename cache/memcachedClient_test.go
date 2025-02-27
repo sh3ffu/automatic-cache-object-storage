@@ -31,11 +31,7 @@ func TestInitialize(t *testing.T) {
 	testData := []byte("testData")
 	initializer := func() (*Object, error) {
 		return &Object{
-			Metadata: &ObjectMetadata{
-				Host:   "localhost",
-				Bucket: "testBucket",
-				Key:    "testKey",
-			},
+			Key:  "testHost/testBucket/testKey",
 			Data: &testData,
 		}, nil
 	}
@@ -78,14 +74,8 @@ func TestInitialize(t *testing.T) {
 }
 
 func compareObject(o1 Object, o2 Object) error {
-	if o1.Metadata.Host != o2.Metadata.Host {
-		return fmt.Errorf("Expected host %s, got %s", o2.Metadata.Host, o1.Metadata.Host)
-	}
-	if o1.Metadata.Bucket != o2.Metadata.Bucket {
-		return fmt.Errorf("Expected bucket %s, got %s", o2.Metadata.Bucket, o1.Metadata.Bucket)
-	}
-	if o1.Metadata.Key != o2.Metadata.Key {
-		return fmt.Errorf("Expected key %s, got %s", o2.Metadata.Key, o1.Metadata.Key)
+	if o1.Key != o2.Key {
+		return fmt.Errorf("Expected key %s, got %s", o2.Key, o1.Key)
 	}
 	if string(*o1.Data) != string(*o2.Data) {
 		return fmt.Errorf("Expected data %s, got %s", string(*o2.Data), string(*o1.Data))
@@ -112,11 +102,7 @@ func TestPut(t *testing.T) {
 
 	testData := []byte("testData")
 	obj := &Object{
-		Metadata: &ObjectMetadata{
-			Host:   "testHost",
-			Bucket: "testBucket",
-			Key:    "testKey",
-		},
+		Key:  "testHost/testBucket/testKey",
 		Data: &testData,
 	}
 
@@ -156,14 +142,6 @@ func TestPut(t *testing.T) {
 		t.Errorf("Expected 'object data is nil', got %v", err)
 	}
 
-	//Test case: Object metadata is nil
-	obj.Data = &testData
-	obj.Metadata = nil
-	err = memcachedClient.Put(obj)
-	if err == nil || err != ErrMetadataNil {
-		t.Errorf("Expected 'object metadata is nil', got %v", err)
-	}
-
 	//Test case: memcached offline
 	mockMemcached.Close()
 	err = memcachedClient.Put(obj)
@@ -192,11 +170,7 @@ func TestGet(t *testing.T) {
 
 	testData := []byte("testData")
 	obj := &Object{
-		Metadata: &ObjectMetadata{
-			Host:   "testHost",
-			Bucket: "testBucket",
-			Key:    "testKey",
-		},
+		Key:  "testHost/testBucket/testKey",
 		Data: &testData,
 	}
 
@@ -236,67 +210,6 @@ func TestGet(t *testing.T) {
 	}
 }
 
-func TestGetMetadata(t *testing.T) {
-	cfg := &minimemcached.Config{
-		Port: 11212,
-	}
-	mockMemcached, err := minimemcached.Run(cfg)
-
-	if err != nil {
-		t.Fatalf("Failed to start minimemcached: %v", err)
-		return
-	}
-
-	defer mockMemcached.Close()
-
-	logger := log.New(os.Stdout, "", log.LstdFlags)
-
-	memcachedClient := NewMemcachedClient(logger, 120, "localhost:11212")
-
-	testData := []byte("testData")
-	obj := &Object{
-		Metadata: &ObjectMetadata{
-			Host:   "testHost",
-			Bucket: "testBucket",
-			Key:    "testKey",
-		},
-		Data: &testData,
-	}
-
-	err = memcachedClient.Put(obj)
-	if err != nil {
-		t.Fatalf("Expected no error, got %v", err)
-	}
-
-	// Test case: Object is in cache
-	cachedObj, err := memcachedClient.GetMetadata("testHost/testBucket/testKey")
-	if err != nil {
-		t.Fatalf("Expected no error, got %v", err)
-	}
-	if cachedObj.Host != "testHost" || cachedObj.Bucket != "testBucket" || cachedObj.Key != "testKey" {
-		t.Errorf("Expected metadata %v, got %v", obj.Metadata, cachedObj)
-	}
-
-	// Test case: Object is not in cache
-	_, err = memcachedClient.GetMetadata("testHost/testBucket/testKey2")
-	if err == nil || err != ErrCacheMiss {
-		t.Errorf("Expected %v, got %v", ErrCacheMiss, err)
-	}
-
-	// Test case: Invalid key
-	_, err = memcachedClient.GetMetadata("testHost/testBucket")
-	if err == nil || err != ErrInvalidKey {
-		t.Errorf("Expected %v, got %v", ErrInvalidKey, err)
-	}
-
-	//Test case: memcached offline
-	mockMemcached.Close()
-	_, err = memcachedClient.GetMetadata("testHost/testBucket/testKey")
-	if err == nil {
-		t.Errorf("Expected error, got nil")
-	}
-}
-
 func TestDelete(t *testing.T) {
 	cfg := &minimemcached.Config{
 		Port: 11212,
@@ -316,11 +229,7 @@ func TestDelete(t *testing.T) {
 
 	testData := []byte("testData")
 	obj := &Object{
-		Metadata: &ObjectMetadata{
-			Host:   "testHost",
-			Bucket: "testBucket",
-			Key:    "testKey",
-		},
+		Key:  "testHost/testBucket/testKey",
 		Data: &testData,
 	}
 

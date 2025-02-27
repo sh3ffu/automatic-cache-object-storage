@@ -9,39 +9,6 @@ import (
 	"time"
 )
 
-func TestDummyPrinterCache_GetMetadata(t *testing.T) {
-	cache := &DummyPrinterCache{
-		logger:  log.New(io.Discard, "", log.LstdFlags),
-		maxSize: 1024,
-		store:   make(map[string]*Object),
-	}
-
-	meta := &ObjectMetadata{
-		Host:   "localhost",
-		Bucket: "testBucket",
-		Key:    "testKey",
-	}
-
-	data := []byte("testData")
-
-	obj := &Object{
-		Metadata: meta,
-		Data:     &data,
-	}
-
-	cache.lock.Lock()
-	cache.store[calculateKey(meta)] = obj
-	cache.lock.Unlock()
-
-	retrievedMeta, err := cache.GetMetadata(calculateKey(meta))
-	if err != nil {
-		t.Errorf("Expected no error, but got %v", err)
-	}
-	if retrievedMeta != meta {
-		t.Errorf("Expected metadata %v, but got %v", meta, retrievedMeta)
-	}
-}
-
 func TestDummyPrinterCache_Get(t *testing.T) {
 	cache := &DummyPrinterCache{
 		logger:  log.New(io.Discard, "", log.LstdFlags),
@@ -49,27 +16,21 @@ func TestDummyPrinterCache_Get(t *testing.T) {
 		store:   make(map[string]*Object),
 	}
 
-	meta := &ObjectMetadata{
-		Host:   "localhost",
-		Bucket: "testBucket",
-		Key:    "testKey",
-	}
-
 	data := []byte("testData")
 	obj := &Object{
-		Metadata: meta,
-		Data:     &data,
+		Key:  "localhost/testBucket/testKey",
+		Data: &data,
 	}
 
 	cache.lock.Lock()
-	cache.store[calculateKey(meta)] = obj
+	cache.store[obj.Key] = obj
 	cache.lock.Unlock()
 
 	initializer := func() (*Object, error) {
 		return obj, nil
 	}
 
-	retrievedObj, err := cache.Get(calculateKey(meta), initializer)
+	retrievedObj, err := cache.Get(obj.Key, initializer)
 	if err != nil {
 		t.Errorf("Expected no error, but got %v", err)
 	}
@@ -93,18 +54,12 @@ func TestDummyPrinterCache_Get_NotFound(t *testing.T) {
 		store:   make(map[string]*Object),
 	}
 
-	meta := &ObjectMetadata{
-		Host:   "localhost",
-		Bucket: "testBucket",
-		Key:    "testKey",
-	}
-
 	initializer := func() (*Object, error) {
 		time.Sleep(500 * time.Millisecond)
 		return nil, errors.New("Retrieval failed")
 	}
 
-	retrievedObj, err := cache.Get(calculateKey(meta), initializer)
+	retrievedObj, err := cache.Get("dummy_key", initializer)
 	if err == nil {
 		t.Errorf("Expected an error, but got nil")
 	}
@@ -120,16 +75,10 @@ func TestDummyPrinterCache_Get_Initializer(t *testing.T) {
 		store:   make(map[string]*Object),
 	}
 
-	meta := &ObjectMetadata{
-		Host:   "localhost",
-		Bucket: "testBucket",
-		Key:    "testKey",
-	}
-
 	data := []byte("testData")
 	object := &Object{
-		Metadata: meta,
-		Data:     &data,
+		Key:  "localhost/testBucket/testKey",
+		Data: &data,
 	}
 
 	initializer := func() (*Object, error) {
@@ -137,7 +86,7 @@ func TestDummyPrinterCache_Get_Initializer(t *testing.T) {
 		return object, nil
 	}
 
-	retrievedObj, err := cache.Get(calculateKey(meta), initializer)
+	retrievedObj, err := cache.Get(object.Key, initializer)
 	if err != nil {
 		t.Errorf("Expected no error, but got %v", err)
 	}
@@ -161,16 +110,10 @@ func TestDummyPrinterCache_Put(t *testing.T) {
 		store:   make(map[string]*Object),
 	}
 
-	meta := &ObjectMetadata{
-		Host:   "localhost",
-		Bucket: "testBucket",
-		Key:    "testKey",
-	}
-
 	data := []byte("testData")
 	obj := &Object{
-		Metadata: meta,
-		Data:     &data,
+		Key:  "localhost/testBucket/testKey",
+		Data: &data,
 	}
 
 	err := cache.Put(obj)
@@ -179,7 +122,7 @@ func TestDummyPrinterCache_Put(t *testing.T) {
 	}
 
 	cache.lock.RLock()
-	storedObj, exists := cache.store[calculateKey(meta)]
+	storedObj, exists := cache.store[obj.Key]
 	cache.lock.RUnlock()
 
 	if !exists {
@@ -188,8 +131,8 @@ func TestDummyPrinterCache_Put(t *testing.T) {
 	if storedObj != obj {
 		t.Errorf("Expected stored object %v, but got %v", obj, storedObj)
 	}
-	if storedObj.Metadata != meta {
-		t.Errorf("Expected stored object metadata %v, but got %v", meta, storedObj.Metadata)
+	if storedObj.Key != obj.Key {
+		t.Errorf("Expected stored object key %s, but got %s", obj.Key, storedObj.Key)
 	}
 	if !bytes.Equal(*storedObj.Data, data) {
 		t.Errorf("Expected stored object data %v, but got %v", data, *storedObj.Data)

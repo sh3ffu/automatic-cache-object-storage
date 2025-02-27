@@ -5,6 +5,12 @@ go 1.22.3
 require github.com/cilium/ebpf v0.15.0
 
 require (
+	github.com/aws/aws-sdk-go v1.55.6 // indirect
+	github.com/igneous-systems/s3bench v0.0.0-20190531022958-7b8100187531 // indirect
+	github.com/jmespath/go-jmespath v0.4.0 // indirect
+)
+
+require (
 	github.com/benbjohnson/clock v1.3.0 // indirect
 	github.com/bradfitz/gomemcache v0.0.0-20230905024940-24af94b03874
 	github.com/mattn/go-colorable v0.1.13 // indirect

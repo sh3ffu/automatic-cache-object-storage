@@ -13,10 +13,6 @@ type FakePasstroughCache struct {
 	maxSize int64
 }
 
-func (pc *FakePasstroughCache) GetMetadata(key string) (*ObjectMetadata, error) {
-	return nil, fmt.Errorf("Object with key %s not found", key)
-}
-
 func (pc *FakePasstroughCache) Get(key string, initializer Initializer) (*Object, error) {
 	obj, exists := pc.get(key)
 	if !exists {

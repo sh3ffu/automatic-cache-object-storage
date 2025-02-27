@@ -7,6 +7,6 @@ import (
 
 type ObjectStorage interface {
 	ShouldIntercept(req *http.Request) bool
-	ExtractObjectMeta(req *http.Request) (*cache.ObjectMetadata, error)
+	ExtractObjectKey(req *http.Request) string
 	CreateLocalResponse(object *cache.Object) (*http.Response, error)
 }

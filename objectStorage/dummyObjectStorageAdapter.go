@@ -3,7 +3,6 @@ package objectStorage
 import (
 	"automatic-cache-object-storage/cache"
 	"bytes"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -11,32 +10,6 @@ import (
 
 type DummyObjectStorageAdapter struct {
 	Host string
-}
-
-func (dosa *DummyObjectStorageAdapter) ExtractObjectMeta(req *http.Request) (*cache.ObjectMetadata, error) {
-	host := req.Host
-	path := strings.Split(req.URL.Path, "/")
-
-	if len(path) < 3 {
-		return nil, fmt.Errorf("invalid request: %s", req.URL.Path)
-	}
-
-	if req.Method != http.MethodGet {
-		return nil, fmt.Errorf("invalid request method. Only GET requests accepted: %s", req.Method)
-	}
-
-	bucket := path[1]
-	key := path[2]
-
-	if host == "" || bucket == "" || key == "" {
-		return nil, fmt.Errorf("invalid request: some fields are empty")
-	}
-
-	return &cache.ObjectMetadata{
-		Host:   host,
-		Bucket: bucket,
-		Key:    key,
-	}, nil
 }
 
 func (dosa *DummyObjectStorageAdapter) CreateLocalResponse(object *cache.Object) (*http.Response, error) {

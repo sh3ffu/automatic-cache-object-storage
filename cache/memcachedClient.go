@@ -40,18 +40,6 @@ func (mw *MemcachedClient) Get(key string, initializer Initializer) (*Object, er
 	return obj, nil
 }
 
-func (mw *MemcachedClient) GetMetadata(key string) (*ObjectMetadata, error) {
-	_, err := mw.get(key)
-
-	if err == memcache.ErrCacheMiss {
-		return nil, ErrCacheMiss
-	}
-	if err != nil {
-		return nil, err
-	}
-	return NewMetadata(key)
-}
-
 func (mw *MemcachedClient) Put(obj *Object) error {
 	return mw.set(obj)
 }
@@ -84,14 +72,12 @@ func (mw *MemcachedClient) set(obj *Object) error {
 	if obj == nil {
 		return ErrObjectNil
 	}
-	if obj.Metadata == nil {
-		return ErrMetadataNil
+	if obj.Key == "" {
+		return ErrInvalidKey
 	}
 	if obj.Data == nil {
 		return ErrDataNil
 	}
-
-	cacheKey := fmt.Sprintf("%s/%s/%s", obj.Metadata.Host, obj.Metadata.Bucket, obj.Metadata.Key)
 
 	serialized, err := mw.serializeObj(*obj)
 	if err != nil {
@@ -99,7 +85,7 @@ func (mw *MemcachedClient) set(obj *Object) error {
 	}
 
 	return mw.client.Set(&memcache.Item{
-		Key:        cacheKey,
+		Key:        obj.Key,
 		Value:      serialized,
 		Expiration: mw.ttl,
 	})

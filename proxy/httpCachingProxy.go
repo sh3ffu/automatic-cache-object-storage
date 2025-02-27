@@ -18,10 +18,6 @@ type HttpCachingProxy struct {
 	ObjectStorageAdapters []objectStorage.ObjectStorage
 }
 
-func calculateKey(meta *cache.ObjectMetadata) string {
-	return meta.Host + "/" + meta.Bucket + "/" + meta.Key
-}
-
 func (p *HttpCachingProxy) handleHttpInternal(conn net.Conn, targetAddr net.Addr) {
 
 	defer conn.Close()
@@ -37,18 +33,13 @@ func (p *HttpCachingProxy) handleHttpInternal(conn net.Conn, targetAddr net.Addr
 
 	if shouldIntercept {
 		adapter := p.ObjectStorageAdapters[adapterIndex]
-		objectMeta, err := adapter.ExtractObjectMeta(request)
-
-		if err != nil {
-			p.forward(conn, targetAddr, request)
-			return
-		}
+		objKey := adapter.ExtractObjectKey(request)
 
 		initializer := func() (*cache.Object, error) {
-			return p.retrieveObjectFromRemote(request, targetAddr, *objectMeta)
+			return p.retrieveObjectFromRemote(request, targetAddr, objKey)
 		}
 
-		cachedObj, err := p.Cache.Get(calculateKey(objectMeta), initializer)
+		cachedObj, err := p.Cache.Get(objKey, initializer)
 		if err == nil {
 			// Cache hit - Serve from cache
 
@@ -95,7 +86,7 @@ func (p *HttpCachingProxy) shouldIntercept(req *http.Request) (bool, int) {
 	}
 	return false, -1
 }
-func (p *HttpCachingProxy) retrieveObjectFromRemote(req *http.Request, targetAddr net.Addr, objectMeta cache.ObjectMetadata) (*cache.Object, error) {
+func (p *HttpCachingProxy) retrieveObjectFromRemote(req *http.Request, targetAddr net.Addr, objectKey string) (*cache.Object, error) {
 
 	// Retrieve object from remote storage
 
@@ -141,10 +132,10 @@ func (p *HttpCachingProxy) retrieveObjectFromRemote(req *http.Request, targetAdd
 			return
 		}
 		data := buffer.Bytes()
-		objectMeta.OriginalHeaders = res.Header
 		object := &cache.Object{
-			Metadata: &objectMeta,
-			Data:     &data,
+			Key:             objectKey,
+			OriginalHeaders: res.Header,
+			Data:            &data,
 		}
 		errChan <- nil
 		objChan <- object

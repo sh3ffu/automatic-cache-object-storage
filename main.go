@@ -26,6 +26,7 @@ import (
 	"automatic-cache-object-storage/objectStorage"
 	"automatic-cache-object-storage/proxy"
 	"net/http"
+	"os/signal"
 )
 
 const (
@@ -33,7 +34,7 @@ const (
 	PROXY_PORT      = 18000            // Port where the proxy server listens
 	SO_ORIGINAL_DST = 80               // Socket option to get the original destination address
 	MAX_BUFFER_SIZE = 100000           // Maximum buffer size for reading data from the connection
-	MAX_WORKERS     = 10               // Maximum number of workers in the worker pool
+	MAX_WORKERS     = 1000             // Maximum number of workers in the worker pool
 )
 
 var bypassHttpHandler bool = false
@@ -58,7 +59,7 @@ type ProxyTask struct {
 }
 
 var proxyModule proxy.HttpProxy
-var cacheModule cache.Cache
+var cacheModule *cache.BigcacheWrapper
 var connectionCounter ConnectionCounter
 
 // helper function for getsockopt
@@ -191,6 +192,13 @@ func run(w io.Writer) error {
 
 	//Bigcache client
 	cacheModule = cache.NewBigcacheWrapper(log.New(w, "Cache: ", log.LstdFlags), 1000)
+
+	go func() {
+		for {
+			time.Sleep(2 * time.Second)
+			cacheModule.SaveStats()
+		}
+	}()
 
 	proxyModule = proxy.NewHttpCachingProxy(
 		// cache.NewDummyPrinterCache(log.New(w, "Cache: ", log.LstdFlags), 1000),
@@ -325,6 +333,25 @@ func displayConnections(connectionCounter *ConnectionCounter) {
 }
 
 func main() {
+
+	sigt := make(chan os.Signal, 1)
+	signal.Notify(sigt, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigt
+
+		color.HiBlue("Writing stats to file")
+		stats, err := os.Create(fmt.Sprintf("stats-%s.csv", time.Now().Format("2006-01-02--15-04-05")))
+		if err != nil {
+			color.HiRed("Failed to create stats file: %v", err)
+		}
+
+		defer stats.Close()
+		cacheModule.GetStats().WriteCSV(stats)
+
+		fmt.Println("Exiting...")
+		os.Exit(0)
+	}()
+
 	if err := run(os.Stdout); err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v", err)
 		os.Exit(1)

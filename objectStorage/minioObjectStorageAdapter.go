@@ -3,7 +3,6 @@ package objectStorage
 import (
 	"automatic-cache-object-storage/cache"
 	"bytes"
-	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -15,31 +14,8 @@ type MinioObjectStorageAdapter struct {
 	Host string
 }
 
-func (mosa *MinioObjectStorageAdapter) ExtractObjectMeta(req *http.Request) (*cache.ObjectMetadata, error) {
-	host := req.Host
-	path := strings.Split(req.URL.Path, "/")
-
-	if len(path) < 3 {
-		return nil, fmt.Errorf("invalid request: %s", req.URL.Path)
-	}
-
-	if req.Method != http.MethodGet {
-		return nil, fmt.Errorf("invalid request method. Only GET requests accepted: %s", req.Method)
-	}
-
-	bucket := path[1]
-	key := path[2]
-
-	if host == "" || bucket == "" || key == "" {
-		return nil, fmt.Errorf("invalid request: some fields are empty")
-	}
-
-	return &cache.ObjectMetadata{
-		Host:            host,
-		Bucket:          bucket,
-		Key:             key,
-		OriginalHeaders: req.Header,
-	}, nil
+func (mosa *MinioObjectStorageAdapter) ExtractObjectKey(req *http.Request) string {
+	return req.URL.Host + req.URL.Path + "?" + req.URL.RawQuery
 }
 
 func (mosa *MinioObjectStorageAdapter) CreateLocalResponse(object *cache.Object) (*http.Response, error) {
@@ -49,7 +25,7 @@ func (mosa *MinioObjectStorageAdapter) CreateLocalResponse(object *cache.Object)
 		ProtoMinor:    1,
 		StatusCode:    http.StatusOK,
 		ContentLength: int64(len(*object.Data)),
-		Header:        object.Metadata.OriginalHeaders,
+		Header:        object.OriginalHeaders,
 		Body:          io.NopCloser(bytes.NewReader(*object.Data)),
 	}
 	return response, nil
@@ -63,12 +39,24 @@ func (mosa *MinioObjectStorageAdapter) ShouldIntercept(req *http.Request) bool {
 	if req.URL.RawQuery == "location" {
 		return false
 	}
+
+	if req.Method != http.MethodGet {
+		return false
+	}
 	path := strings.Split(req.URL.Path, "/")
 
 	hostOk := strings.Contains(req.Host, mosa.Host)
-	requestOk := req.Method == http.MethodGet && len(path) >= 3 && validateBucketName(path[1]) && minIoisObjectKey(path[2])
+	requestOk := req.Method == http.MethodGet && len(path) >= 3 && validateBucketName(path[1]) && minIoisObjectKey(getObjectPathFromURL(req.URL.String()))
 
 	return hostOk && requestOk
+}
+
+func getObjectPathFromURL(url string) string {
+	parts := strings.Split(url, "/")
+	if len(parts) < 3 {
+		return ""
+	}
+	return strings.Join(parts[2:], "/")
 }
 
 func NewMinIOAdapter(host string) MinioObjectStorageAdapter {

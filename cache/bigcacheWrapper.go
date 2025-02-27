@@ -6,14 +6,27 @@ import (
 	"encoding/gob"
 	"fmt"
 	"log"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/allegro/bigcache/v3"
 )
 
+type StatsLogEntry struct {
+	Timestamp time.Time
+	bigcache.Stats
+}
+
+type StatsLog struct {
+	Entries []StatsLogEntry
+	sync.Mutex
+}
+
 type BigcacheWrapper struct {
 	bc     *bigcache.BigCache
 	logger *log.Logger
+	stats  StatsLog
 }
 
 /*
@@ -33,8 +46,19 @@ func NewBigcacheWrapper(logger *log.Logger, maxMemory int) *BigcacheWrapper {
 	// 	OnRemove:           nil,
 	// 	OnRemoveWithReason: nil,
 	// }
+	config := bigcache.Config{
+		Shards:             1024,
+		LifeWindow:         10 * time.Minute,
+		CleanWindow:        1 * time.Second,
+		MaxEntriesInWindow: 1000 * 10 * 60,
+		MaxEntrySize:       1000000,
+		StatsEnabled:       false,
+		Verbose:            true,
+		HardMaxCacheSize:   4096,
+		Logger:             logger,
+	}
 
-	bc, err := bigcache.New(context.Background(), bigcache.DefaultConfig(10*time.Minute))
+	bc, err := bigcache.New(context.Background(), config)
 	if err != nil {
 		logger.Fatalf("Error creating bigcache instance: %v", err)
 	}
@@ -53,16 +77,8 @@ func (bw *BigcacheWrapper) Get(key string, initializer Initializer) (*Object, er
 
 		return bw.initialize(key, initializer)
 	}
-
+	//bw.saveStats()
 	return data, nil
-}
-
-func (bw *BigcacheWrapper) GetMetadata(key string) (*ObjectMetadata, error) {
-	_, err := bw.get(key)
-	if err != nil {
-		return nil, err
-	}
-	return NewMetadata(key)
 }
 
 func (bw *BigcacheWrapper) Put(o *Object) error {
@@ -98,7 +114,7 @@ func (bw *BigcacheWrapper) put(o *Object) error {
 	if err != nil {
 		return fmt.Errorf("%v: %w", ErrSerialization, err)
 	}
-	err = bw.bc.Set(fmt.Sprintf("%s/%s/%s", o.Metadata.Host, o.Metadata.Bucket, o.Metadata.Key), serializedObj)
+	err = bw.bc.Set(o.Key, serializedObj)
 	if err != nil {
 		return err
 	}
@@ -119,8 +135,8 @@ func (bw *BigcacheWrapper) get(key string) (*Object, error) {
 	return &o, nil
 }
 
-func (bw *BigcacheWrapper) GetStats() string {
-	return fmt.Sprintf("Bigcache stats: Hits: %d, Misses: %d, DelHits: %d, DelMisses: %d, Collisions: %d", bw.bc.Stats().Hits, bw.bc.Stats().Misses, bw.bc.Stats().DelHits, bw.bc.Stats().DelMisses, bw.bc.Stats().Collisions)
+func (bw *BigcacheWrapper) GetStats() *StatsLog {
+	return &bw.stats
 }
 
 func (bw *BigcacheWrapper) serializeObj(o Object) ([]byte, error) {
@@ -144,4 +160,34 @@ func (bw *BigcacheWrapper) deserializeObj(serialized []byte) (Object, error) {
 		return Object{}, err
 	}
 	return o, nil
+}
+
+func (bw *BigcacheWrapper) SaveStats() {
+	stats := bw.bc.Stats()
+
+	bw.stats.Lock()
+	bw.stats.Entries = append(bw.stats.Entries, StatsLogEntry{
+		Timestamp: time.Now(),
+		Stats:     stats,
+	})
+	bw.stats.Unlock()
+
+}
+
+func (sl *StatsLog) WriteCSV(f *os.File) error {
+	sl.Lock()
+	defer sl.Unlock()
+	_, err := f.WriteString("time,hits,misses,delete_hits,delete_misses,collisions\n")
+
+	if err != nil {
+		return err
+	}
+
+	for _, s := range sl.Entries {
+		_, err := f.WriteString(fmt.Sprintf("%v,%d,%d,%d,%d,%d\n", s.Timestamp.Format(time.RFC3339), s.Hits, s.Misses, s.DelHits, s.DelMisses, s.Collisions))
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
