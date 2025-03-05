@@ -36,7 +36,7 @@ func minIoisObjectKey(key string) bool {
 }
 
 func (mosa *MinioObjectStorageAdapter) ShouldIntercept(req *http.Request) bool {
-	if req.URL.RawQuery == "location" {
+	if strings.Contains(req.URL.RawQuery, "location") {
 		return false
 	}
 

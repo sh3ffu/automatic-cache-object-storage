@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/bradfitz/gomemcache/memcache"
 )
@@ -38,6 +39,21 @@ func (mw *MemcachedClient) Get(key string, initializer Initializer) (*Object, er
 
 	}
 	return obj, nil
+}
+
+func (mw *MemcachedClient) GetTimed(key string, initializer Initializer) (*Object, int64, int64, error) {
+	start := time.Now()
+	data, err := mw.get(key)
+	elapsed := time.Since(start).Nanoseconds()
+
+	if err != nil {
+		//object not found
+		start := time.Now()
+		obj, err := mw.initialize(key, initializer)
+		initElapsed := time.Since(start).Nanoseconds()
+		return obj, elapsed, initElapsed, err
+	}
+	return data, elapsed, 0, err
 }
 
 func (mw *MemcachedClient) Put(obj *Object) error {

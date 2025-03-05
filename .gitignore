@@ -3,3 +3,6 @@ build
 proxy.exe
 proxy_bpfeb.go
 proxy_bpfel.go
+
+cache-stats-*.csv
+proxy-stats-*.csv

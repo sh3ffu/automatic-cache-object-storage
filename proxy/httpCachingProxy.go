@@ -86,6 +86,7 @@ func (p *HttpCachingProxy) shouldIntercept(req *http.Request) (bool, int) {
 	}
 	return false, -1
 }
+
 func (p *HttpCachingProxy) retrieveObjectFromRemote(req *http.Request, targetAddr net.Addr, objectKey string) (*cache.Object, error) {
 
 	// Retrieve object from remote storage

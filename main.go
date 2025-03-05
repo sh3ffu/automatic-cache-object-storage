@@ -25,7 +25,6 @@ import (
 	"automatic-cache-object-storage/cache"
 	"automatic-cache-object-storage/objectStorage"
 	"automatic-cache-object-storage/proxy"
-	"net/http"
 	"os/signal"
 )
 
@@ -35,6 +34,7 @@ const (
 	SO_ORIGINAL_DST = 80               // Socket option to get the original destination address
 	MAX_BUFFER_SIZE = 100000           // Maximum buffer size for reading data from the connection
 	MAX_WORKERS     = 1000             // Maximum number of workers in the worker pool
+	TIMED           = false
 )
 
 var bypassHttpHandler bool = false
@@ -49,7 +49,8 @@ type SockAddrIn struct {
 }
 
 type ConnectionCounter struct {
-	connections int
+	connections    int
+	collectedStats []proxy.ProxyStatsEntry
 	sync.Mutex
 }
 
@@ -59,6 +60,7 @@ type ProxyTask struct {
 }
 
 var proxyModule proxy.HttpProxy
+var timedProxyModule proxy.HttpTimedProxy
 var cacheModule *cache.BigcacheWrapper
 var connectionCounter ConnectionCounter
 
@@ -138,16 +140,14 @@ func forwardConnection(conn net.Conn, targetAddr net.Addr) {
 }
 
 // HTTP proxy request handler
-func handleConnection(conn net.Conn) {
+func handleConnection(conn net.Conn, proxyModule proxy.HttpProxy) {
 
 	targetAddr, err := getOriginalTargetFromConn(conn) // TODO: do this in separate goroutine
 	if err != nil {
 		log.Printf("Failed to get original destination: %v", err)
-		return
 	}
 
 	if !bypassHttpHandler {
-		//handleHttpConn(conn, targetAddr)
 		proxyModule.HandleHttp(conn, targetAddr)
 	} else {
 		forwardConnection(conn, targetAddr)
@@ -155,26 +155,50 @@ func handleConnection(conn net.Conn) {
 
 }
 
-func proxyWorker(id int, jobs <-chan ProxyTask, results chan<- int) {
+func handleConnectionTimed(conn net.Conn, proxyModule proxy.HttpTimedProxy) proxy.ProxyStatsEntry {
+	targetAddr, err := getOriginalTargetFromConn(conn) // TODO: do this in separate goroutine
+	if err != nil {
+		log.Printf("Failed to get original destination: %v", err)
+		return proxy.ProxyStatsEntry{Failed: true}
+	}
+
+	if !bypassHttpHandler {
+		return proxyModule.HandleHttp(conn, targetAddr)
+	} else {
+		forwardConnection(conn, targetAddr)
+		return proxy.ProxyStatsEntry{Forwarded: true}
+	}
+}
+
+func proxyWorker(id int, proxy proxy.HttpProxy, jobs <-chan ProxyTask, results chan<- int) {
 
 	fmt.Printf("Worker %d started\n", id)
 	for job := range jobs {
 		//fmt.Printf("Worker %d processing job %d\n", id, job.id)
-		handleConnection(job.conn)
+		handleConnection(job.conn, proxy)
 		results <- 0
 		//fmt.Printf("Worker %d finished job %d\n", id, job.id)
 	}
 
 }
 
+func timedProxyWorker(id int, proxy proxy.HttpTimedProxy, jobs <-chan ProxyTask, results chan<- proxy.ProxyStatsEntry) {
+	fmt.Printf("Worker %d started\n", id)
+	for job := range jobs {
+		//fmt.Printf("Worker %d processing job %d\n", id, job.id)
+		stats := handleConnectionTimed(job.conn, proxy)
+		stats.WorkerID = id
+		results <- stats
+		//fmt.Printf("Worker %d finished job %d\n", id, job.id)
+	}
+}
+
 func run(w io.Writer) error {
 
 	// Start the pprof server
-	go func() {
-		log.Println(http.ListenAndServe("localhost:6060", nil))
-	}()
-
-	// Initialize the configuration from the interceptLinks.json file
+	// go func() {
+	// 	log.Println(http.ListenAndServe("localhost:6060", nil))
+	// }()
 
 	//objectStorage1 := objectStorage.NewDummyObjectStorageAdapter("host.lima.internal")
 	minioObjStorage := objectStorage.NewMinIOAdapter("host.lima.internal:9000")
@@ -199,18 +223,6 @@ func run(w io.Writer) error {
 			cacheModule.SaveStats()
 		}
 	}()
-
-	proxyModule = proxy.NewHttpCachingProxy(
-		// cache.NewDummyPrinterCache(log.New(w, "Cache: ", log.LstdFlags), 1000),
-		cacheModule,
-		[]objectStorage.ObjectStorage{
-			//&objectStorage1,
-			&minioObjStorage,
-		},
-	)
-
-	//Uncomment for Printing proxy
-	//proxyModule = proxy.NewHttpPrintingProxy()
 
 	args := os.Args[1:]
 	if len(args) > 0 {
@@ -287,41 +299,101 @@ func run(w io.Writer) error {
 
 	log.Printf("Proxy server with PID %d listening on %s", os.Getpid(), proxyAddr)
 
-	// Setup worker pool
-	jobQueue := make(chan ProxyTask, MAX_BUFFER_SIZE)
-	done := make(chan int, MAX_BUFFER_SIZE)
+	if TIMED {
 
-	for i := 0; i < MAX_WORKERS; i++ {
-		go proxyWorker(i, jobQueue, done)
-	}
+		proxyModule := proxy.NewHttpCachingTimedProxy(
+			cacheModule,
+			[]objectStorage.ObjectStorage{
+				//&objectStorage1,
+				&minioObjStorage,
+			},
+		)
 
-	var jobIndex = 0
+		// Setup worker pool
+		jobQueue := make(chan ProxyTask, MAX_BUFFER_SIZE)
+		done := make(chan proxy.ProxyStatsEntry, MAX_BUFFER_SIZE)
 
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			log.Printf("Failed to accept connection: %v", err)
-			continue
+		for i := 0; i < MAX_WORKERS; i++ {
+			go timedProxyWorker(i, proxyModule, jobQueue, done)
 		}
 
-		// Increment the connection counter
-		connectionCounter.Lock()
-		connectionCounter.connections++
-		connectionCounter.Unlock()
-		displayConnections(&connectionCounter)
+		var jobIndex = 0
 
-		// Add the connection to the job queue
-		jobIndex++
-		jobQueue <- ProxyTask{conn: conn, id: jobIndex}
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				log.Printf("Failed to accept connection: %v", err)
+				continue
+			}
 
-		// Update current connection display
-		go func() {
-			<-done
+			// Increment the connection counter
 			connectionCounter.Lock()
-			connectionCounter.connections--
+			connectionCounter.connections++
 			connectionCounter.Unlock()
 			displayConnections(&connectionCounter)
-		}()
+
+			// Add the connection to the job queue
+			jobIndex++
+			jobQueue <- ProxyTask{conn: conn, id: jobIndex}
+
+			// Update current connection display
+			go func() {
+				stats := <-done
+				connectionCounter.Lock()
+				connectionCounter.connections--
+				connectionCounter.collectedStats = append(connectionCounter.collectedStats, stats)
+				connectionCounter.Unlock()
+				displayConnections(&connectionCounter)
+			}()
+
+		}
+	} else {
+
+		proxyModule := proxy.NewHttpCachingProxy(
+			cacheModule,
+			[]objectStorage.ObjectStorage{
+				//&objectStorage1,
+				&minioObjStorage,
+			},
+		)
+
+		// Setup worker pool
+		jobQueue := make(chan ProxyTask, MAX_BUFFER_SIZE)
+		done := make(chan int, MAX_BUFFER_SIZE)
+
+		for i := 0; i < MAX_WORKERS; i++ {
+			go proxyWorker(i, proxyModule, jobQueue, done)
+		}
+
+		var jobIndex = 0
+
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				log.Printf("Failed to accept connection: %v", err)
+				continue
+			}
+
+			// Increment the connection counter
+			connectionCounter.Lock()
+			connectionCounter.connections++
+			connectionCounter.Unlock()
+			displayConnections(&connectionCounter)
+
+			// Add the connection to the job queue
+			jobIndex++
+			jobQueue <- ProxyTask{conn: conn, id: jobIndex}
+
+			// Update current connection display
+			go func() {
+				<-done
+				connectionCounter.Lock()
+				connectionCounter.connections--
+				connectionCounter.Unlock()
+				displayConnections(&connectionCounter)
+			}()
+
+		}
 
 	}
 
@@ -339,14 +411,29 @@ func main() {
 	go func() {
 		<-sigt
 
-		color.HiBlue("Writing stats to file")
-		stats, err := os.Create(fmt.Sprintf("stats-%s.csv", time.Now().Format("2006-01-02--15-04-05")))
+		color.HiBlue("Writing cache stats to file")
+		stats, err := os.Create(fmt.Sprintf("cache-stats-%s.csv", time.Now().Format("2006-01-02--15-04-05")))
 		if err != nil {
-			color.HiRed("Failed to create stats file: %v", err)
+			color.HiRed("Failed to create cache stats file: %v", err)
 		}
 
 		defer stats.Close()
 		cacheModule.GetStats().WriteCSV(stats)
+
+		if TIMED {
+			color.HiBlue("Writing proxy stats to file")
+			pStats, err := os.Create(fmt.Sprintf("proxy-stats-%s.csv", time.Now().Format("2006-01-02--15-04-05")))
+			if err != nil {
+				color.HiRed("Failed to create proxy stats file: %v", err)
+			}
+
+			defer pStats.Close()
+
+			pStats.WriteString("total, cacheRetrieve, initialize, readRequest, dialRemote, writeRequest, readResponse, writeResponse, cacheMiss, forwarded, failed, objectKey, workerID\n")
+			for _, s := range connectionCounter.collectedStats {
+				pStats.WriteString(fmt.Sprintf("%v,%v,%v,%v,%v,%v,%v,%v,%v,%v,%v,%v,%v\n", s.Total, s.CacheRetrieve, s.Initialize, s.ReadRequest, s.DialRemote, s.WriteRequest, s.ReadResponse, s.WriteResponse, s.CacheMiss, s.Forwarded, s.Failed, s.ObjectKey, s.WorkerID))
+			}
+		}
 
 		fmt.Println("Exiting...")
 		os.Exit(0)

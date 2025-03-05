@@ -54,7 +54,7 @@ func NewBigcacheWrapper(logger *log.Logger, maxMemory int) *BigcacheWrapper {
 		MaxEntrySize:       1000000,
 		StatsEnabled:       false,
 		Verbose:            true,
-		HardMaxCacheSize:   4096,
+		HardMaxCacheSize:   512,
 		Logger:             logger,
 	}
 
@@ -77,8 +77,22 @@ func (bw *BigcacheWrapper) Get(key string, initializer Initializer) (*Object, er
 
 		return bw.initialize(key, initializer)
 	}
-	//bw.saveStats()
 	return data, nil
+}
+
+func (bw *BigcacheWrapper) GetTimed(key string, initializer Initializer) (*Object, int64, int64, error) {
+	start := time.Now()
+	data, err := bw.get(key)
+	elapsed := time.Since(start).Nanoseconds()
+
+	if err != nil {
+		//object not found
+		start := time.Now()
+		obj, err := bw.initialize(key, initializer)
+		initElapsed := time.Since(start).Nanoseconds()
+		return obj, elapsed, initElapsed, err
+	}
+	return data, elapsed, 0, err
 }
 
 func (bw *BigcacheWrapper) Put(o *Object) error {
@@ -99,10 +113,7 @@ func (bw *BigcacheWrapper) initialize(key string, initializer Initializer) (*Obj
 		if err != nil {
 			return nil, err
 		}
-		err = bw.put(obj)
-		if err != nil {
-			return nil, err
-		}
+		go bw.put(obj)
 		return obj, nil
 	}
 
