@@ -24,7 +24,7 @@ type Object struct {
 type Initializer func() (*Object, error)
 
 type Cache interface {
-	Get(key string, initializer Initializer) (*Object, error)
+	Get(key string) (*Object, error)
 	GetTimed(key string, initializer Initializer) (*Object, int64, int64, error)
 	Put(*Object) error
 }

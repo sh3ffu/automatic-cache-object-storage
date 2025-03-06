@@ -47,7 +47,7 @@ func NewBigcacheWrapper(logger *log.Logger, maxMemory int) *BigcacheWrapper {
 	// 	OnRemoveWithReason: nil,
 	// }
 	config := bigcache.Config{
-		Shards:             1024,
+		Shards:             32,
 		LifeWindow:         10 * time.Minute,
 		CleanWindow:        1 * time.Second,
 		MaxEntriesInWindow: 1000 * 10 * 60,
@@ -69,13 +69,16 @@ func NewBigcacheWrapper(logger *log.Logger, maxMemory int) *BigcacheWrapper {
 	}
 }
 
-func (bw *BigcacheWrapper) Get(key string, initializer Initializer) (*Object, error) {
+func (bw *BigcacheWrapper) Get(key string) (*Object, error) {
 	data, err := bw.get(key)
 
 	if err != nil {
 		//object not found
+		if err == bigcache.ErrEntryNotFound {
 
-		return bw.initialize(key, initializer)
+			return nil, ErrCacheMiss
+		}
+		return nil, err
 	}
 	return data, nil
 }

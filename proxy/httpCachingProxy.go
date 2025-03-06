@@ -8,6 +8,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"time"
 
 	"automatic-cache-object-storage/cache"
 	"automatic-cache-object-storage/objectStorage"
@@ -18,6 +19,15 @@ type HttpCachingProxy struct {
 	ObjectStorageAdapters []objectStorage.ObjectStorage
 }
 
+var failResponse = http.Response{
+	StatusCode: http.StatusServiceUnavailable,
+	Proto:      "HTTP/1.1",
+	ProtoMajor: 1,
+	ProtoMinor: 1,
+	Header:     make(http.Header),
+	Body:       io.NopCloser(bytes.NewReader([]byte("Service Unavailable"))),
+}
+
 func (p *HttpCachingProxy) handleHttpInternal(conn net.Conn, targetAddr net.Addr) {
 
 	defer conn.Close()
@@ -26,6 +36,7 @@ func (p *HttpCachingProxy) handleHttpInternal(conn net.Conn, targetAddr net.Addr
 
 	if err != nil {
 		log.Printf("Failed to read request: %v", err)
+		failResponse.Write(conn)
 		return
 	}
 
@@ -35,13 +46,10 @@ func (p *HttpCachingProxy) handleHttpInternal(conn net.Conn, targetAddr net.Addr
 		adapter := p.ObjectStorageAdapters[adapterIndex]
 		objKey := adapter.ExtractObjectKey(request)
 
-		initializer := func() (*cache.Object, error) {
-			return p.retrieveObjectFromRemote(request, targetAddr, objKey)
-		}
-
-		cachedObj, err := p.Cache.Get(objKey, initializer)
+		cachedObj, err := p.Cache.Get(objKey)
 		if err == nil {
 			// Cache hit - Serve from cache
+			//log.Printf("Cache hit for object: %s", objKey)
 
 			response, err := adapter.CreateLocalResponse(cachedObj)
 			if err != nil {
@@ -51,7 +59,11 @@ func (p *HttpCachingProxy) handleHttpInternal(conn net.Conn, targetAddr net.Addr
 				return
 			}
 
+			t := time.Now()
 			err = response.Write(conn)
+			end := time.Since(t).Milliseconds()
+
+			logIfSuspicious(end, "intercept", objKey)
 
 			if err != nil {
 				log.Printf("Failed to send local response, forwarding connection: %v", err)
@@ -59,16 +71,22 @@ func (p *HttpCachingProxy) handleHttpInternal(conn net.Conn, targetAddr net.Addr
 			}
 
 			return
-		} else {
-			// Log and forward
-			log.Printf("Failed to retrieve object from cache, forwarding connection: %v", err)
-			p.forward(conn, targetAddr, request)
+		} else if err == cache.ErrCacheMiss {
+			// Cache miss - Retrieve object from remote storage
+			//log.Printf("Cache miss for object: %s", objKey)
+			cachingErr := p.retrieveAndCacheObjectFromRemote(request, conn, targetAddr, objKey)
+			if cachingErr != nil {
+				log.Printf("Failed to cache object: %v", cachingErr)
+				p.forward(conn, targetAddr, request)
+			}
 			return
+		} else {
+			log.Printf("Failed to retrieve object from cache, forwarding connection: %v", err)
 		}
 
 	}
 
-	// Request should not be intercepted - Forward request
+	// Request should not be intercepted or unknown error occured - Forward request
 
 	p.forward(conn, targetAddr, request)
 }
@@ -148,30 +166,91 @@ func (p *HttpCachingProxy) retrieveObjectFromRemote(req *http.Request, targetAdd
 	return <-objChan, nil
 }
 
+func (p *HttpCachingProxy) retrieveAndCacheObjectFromRemote(req *http.Request, conn net.Conn, targetAddr net.Addr, objectKey string) error {
+
+	t := time.Now()
+	targetConn, err := net.Dial("tcp", targetAddr.String())
+	logIfSuspicious(time.Since(t).Milliseconds(), "retrieveAndCache-dial", objectKey)
+	if err != nil {
+		return fmt.Errorf("failed to connect to target: %v", err)
+	}
+	defer targetConn.Close()
+
+	t = time.Now()
+	err = req.Write(targetConn)
+	logIfSuspicious(time.Since(t).Milliseconds(), "retrieveAndCache-writeReq", objectKey)
+	if err != nil {
+		return fmt.Errorf("failed to send request to target: %v", err)
+	}
+
+	tee := io.TeeReader(targetConn, conn)
+
+	t = time.Now()
+	res, err := http.ReadResponse(bufio.NewReader(tee), req)
+	logIfSuspicious(time.Since(t).Milliseconds(), "retrieveAndCache-tee-readResp", objectKey)
+	if err != nil {
+		return fmt.Errorf("failed to read response from target: %v", err)
+	}
+
+	defer res.Body.Close()
+
+	if res.StatusCode != http.StatusOK {
+		body, err := io.ReadAll(res.Body)
+		if err != nil {
+			return fmt.Errorf("could not read non-OK response body")
+		}
+		return fmt.Errorf("received non-OK HTTP status: %s : %s", res.Status, string(body))
+	}
+
+	var buffer bytes.Buffer
+	_, err = buffer.ReadFrom(res.Body)
+
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %v", err)
+	}
+
+	data := buffer.Bytes()
+
+	object := &cache.Object{
+		Key:             objectKey,
+		OriginalHeaders: res.Header,
+		Data:            &data,
+	}
+	err = p.Cache.Put(object)
+	if err != nil {
+		return fmt.Errorf("failed to cache object: %v", err)
+	}
+	return nil
+}
+
 func (p *HttpCachingProxy) forward(conn net.Conn, targetAddr net.Addr, req *http.Request) {
 
 	targetConn, err := net.Dial("tcp", targetAddr.String())
 	if err != nil {
-		conn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\n\r\n"))
+		failResponse.Write(conn)
 		return
 	}
 	defer targetConn.Close()
 
 	// Forward request
+	t := time.Now()
 	req.Write(targetConn)
+	logIfSuspicious(time.Since(t).Milliseconds(), "forward", req.URL.Path)
 
-	// Forward response
-	res, err := http.ReadResponse(bufio.NewReader(targetConn), req)
-	if err != nil {
-		conn.Write([]byte("HTTP/1.1 503 Service Unavailable\r\n\r\n"))
-		return
-	}
-	res.Write(conn)
+	tee := io.TeeReader(targetConn, conn)
+	//Forward response
+	http.ReadResponse(bufio.NewReader(tee), req)
 }
 
 func NewHttpCachingProxy(cache cache.Cache, objectStorageAdapters []objectStorage.ObjectStorage) *HttpCachingProxy {
 	return &HttpCachingProxy{
 		Cache:                 cache,
 		ObjectStorageAdapters: objectStorageAdapters,
+	}
+}
+
+func logIfSuspicious(time int64, action string, objKey string) {
+	if time > 1000 {
+		log.Printf("Suspiciously long time to %s object %s: %d ms", action, objKey, time)
 	}
 }
